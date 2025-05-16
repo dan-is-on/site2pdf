@@ -21,9 +21,12 @@ RUN apt-get update && \
 # Create app directory
 WORKDIR /app
 
-# Optional: Copy your project files if needed
-# COPY . .
+# Copy project files and install dependencies
+COPY package.json package-lock.json* ./
+RUN npm install
+
+# Copy the rest of the project files
+COPY . .
 
 # Default command to run site2pdf-cli with args
-# You can override these at runtime using `docker run ... <main_url> <pattern>`
 ENTRYPOINT ["npx", "site2pdf-cli"]

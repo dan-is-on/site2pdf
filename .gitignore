@@ -130,3 +130,50 @@ dist
 .pnp.*
 package-lock.json
 
+# macOS-specific
+.DS_Store
+._*
+.AppleDouble
+.LSOverride
+.DocumentRevisions-V100
+.fseventsd
+.Spotlight-V100
+.TemporaryItems
+.Trashes
+.VolumeIcon.icns
+.com.apple.timemachine.donotpresent
+
+# Logs
+*.log
+logs
+
+# Runtime data
+pids
+*.pid
+*.seed
+*.pid.lock
+
+# General development
+*.swp
+*.swo
+*~
+*.bak
+*.tmp
+.cache
+
+# Project-specific
+virtualization_docs.pdf
+*.pdf
+
+# DevContainer-specific
+.devcontainer/devcontainer-lock.json
+.devcontainer/.env
+.devcontainer/*.cache
+
+# Editor-specific
+.vscode/
+.idea/
+*.code-workspace
+
+# Ruby-specific
+Gemfile.lock
