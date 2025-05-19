@@ -1,7 +1,7 @@
 # Use official Node.js image as base
 FROM node:20-slim
 
-# Install Linux dependencies
+# Install Linux dependencies and Chromium
 RUN apt-get update && \
     apt-get install -y \
         libxkbcommon0 \
@@ -14,19 +14,29 @@ RUN apt-get update && \
         libatspi2.0-0 \
         libgtk-3-0 \
         libgbm-dev \
-        curl && \
+        curl \
+        chromium && \
     apt-get clean && \
     rm -rf /var/lib/apt/lists/*
 
 # Create app directory
 WORKDIR /app
 
+# Create a non-root user
+RUN useradd -m -s /bin/bash pptruser
+USER pptruser
+WORKDIR /home/pptruser/app
+
 # Copy project files and install dependencies
-COPY package.json package-lock.json* ./
+COPY --chown=pptruser:pptruser package.json package-lock.json* ./
 RUN npm install
 
-# Copy the rest of the project files
-COPY . .
+# Copy source files and build
+COPY --chown=pptruser:pptruser . .
+# RUN npm run build
 
-# Default command to run site2pdf-cli with args
-ENTRYPOINT ["npx", "site2pdf-cli"]
+# Set environment variable to tell Puppeteer to use installed Chromium
+ENV PUPPETEER_EXECUTABLE_PATH=/usr/bin/chromium
+
+# Default command to run site2pdf with args
+ENTRYPOINT ["npx", "site2pdf"]

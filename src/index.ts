@@ -26,8 +26,9 @@ type BrowserContext = {
 
 async function useBrowserContext() {
 	const browser = await puppeteer.launch({
-		headless: true,
-		executablePath: chromeFinder(),
+		executablePath: '/usr/bin/chromium',
+  		headless: true,
+  		args: ['--no-sandbox', '--disable-setuid-sandbox']
 	});
 	const page = (await browser.pages())[0];
 	return {
