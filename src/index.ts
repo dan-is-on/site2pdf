@@ -73,16 +73,16 @@ async function crawlLinks(
         await page.evaluate(() => {
             window.scrollTo(0, document.body.scrollHeight);
         });
-        await delay(5000); // Increased delay
+        await delay(10000); // Increased delay to 10s
 
         const subLinks = await page.evaluate((patternString) => {
             const pattern = new RegExp(patternString);
-            // Target all relevant links in main content
+            // Target links in main content, with fallback
             const links = Array.from(
-                document.querySelectorAll('.main a[href^="/documentation/virtualization"]')
+                document.querySelectorAll('.main .content a, .main a[href^="/documentation/virtualization"]')
             ) as HTMLAnchorElement[];
             const allLinks = links.map((link) => link.href);
-            console.log(`Raw links found: ${allLinks.length}`);
+            console.log(`Raw links found: ${allLinks.length}`, allLinks);
             return allLinks.filter((href) => pattern.test(href));
         }, urlPattern.source);
 
@@ -140,13 +140,15 @@ export async function generatePDF(
     ) as Buffer[];
 
     for (const pdfBytes of pdfBytesArray) {
-        const subPdfDoc = await PDFDocument.load(pdfBytes);
-        const copiedPages = await pdfDoc.copyPages(
-            subPdfDoc,
-            subPdfDoc.getPageIndices(),
-        );
-        for (const page of copiedPages) {
-            pdfDoc.addPage(page);
+        if (pdfBytes) {
+            const subPdfDoc = await PDFDocument.load(pdfBytes);
+            const copiedPages = await pdfDoc.copyPages(
+                subPdfDoc,
+                subPdfDoc.getPageIndices(),
+            );
+            for (const page of copiedPages) {
+                pdfDoc.addPage(page);
+            }
         }
     }
 
