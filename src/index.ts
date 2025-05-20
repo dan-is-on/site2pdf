@@ -136,8 +136,8 @@ export async function generatePDF(
         limit(() => generatePDFForPage(link))
     );
     const pdfBytesArray = (await Promise.all(pdfPromises)).filter(
-        (buffer): buffer is Buffer => buffer !== null
-    );
+        (buffer) => buffer !== null
+    ) as Buffer[];
 
     for (const pdfBytes of pdfBytesArray) {
         const subPdfDoc = await PDFDocument.load(pdfBytes);
