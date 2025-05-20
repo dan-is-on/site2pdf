@@ -45,6 +45,10 @@ export function normalizeURL(url: string): string {
         : urlWithoutAnchor;
 }
 
+async function delay(ms: number): Promise<void> {
+    return new Promise(resolve => setTimeout(resolve, ms));
+}
+
 async function crawlLinks(
     page: Page,
     url: string,
@@ -69,14 +73,14 @@ async function crawlLinks(
         await page.evaluate(() => {
             window.scrollTo(0, document.body.scrollHeight);
         });
-        await page.waitForTimeout(5000); // Increased delay
+        await delay(5000); // Increased delay
 
         const subLinks = await page.evaluate((patternString) => {
             const pattern = new RegExp(patternString);
             // Target all relevant links in main content
             const links = Array.from(
                 document.querySelectorAll('.main a[href^="/documentation/virtualization"]')
-            );
+            ) as HTMLAnchorElement[];
             const allLinks = links.map((link) => link.href);
             console.log(`Raw links found: ${allLinks.length}`);
             return allLinks.filter((href) => pattern.test(href));
