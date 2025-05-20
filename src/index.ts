@@ -44,10 +44,20 @@ async function useBrowserContext() {
 }
 
 export function normalizeURL(url: string): string {
-    const urlWithoutAnchor = url.split("#")[0];
-    return urlWithoutAnchor.endsWith("/")
-        ? urlWithoutAnchor.slice(0, -1)
-        : urlWithoutAnchor;
+    try {
+        const parsedUrl = new URL(url);
+        // Remove trailing slash from pathname, preserve query and no hash
+        parsedUrl.pathname = parsedUrl.pathname.replace(/\/+$/, '');
+        parsedUrl.hash = '';
+        const normalized = parsedUrl.toString();
+        logWithTimestamp(`Normalized URL: ${url} -> ${normalized}`);
+        return normalized;
+    } catch (error) {
+        // Fallback for relative URLs or malformed input
+        const cleanUrl = url.split('#')[0].replace(/\/+$/, '');
+        logWithTimestamp(`Normalized fallback URL: ${url} -> ${cleanUrl}`);
+        return cleanUrl;
+    }
 }
 
 async function delay(ms: number): Promise<void> {
@@ -65,6 +75,7 @@ async function crawlLinks(
     const normalizedUrl = normalizeURL(url);
 
     if (visited.has(normalizedUrl)) {
+        logWithTimestamp(`Skipping already visited URL: ${normalizedUrl}`);
         return [];
     }
     visited.add(normalizedUrl);
@@ -160,7 +171,8 @@ export async function generatePDF(
     const visited = new Set<string>();
     
     const allLinks = await crawlLinks(ctx.page, url, urlPattern, visited, concurrentLimit);
-    logWithTimestamp(`Total unique links to process: ${JSON.stringify(allLinks)}`);
+    const uniqueLinks = [...new Set(allLinks.map(normalizeURL))]; // Deduplicate final links
+    logWithTimestamp(`Total unique links to process: ${JSON.stringify(uniqueLinks)}`);
 
     const pdfDoc = await PDFDocument.create();
 
@@ -203,7 +215,7 @@ export async function generatePDF(
         }
     };
 
-    const pdfPromises = allLinks.map((link) =>
+    const pdfPromises = uniqueLinks.map((link) =>
         limit(() => generatePDFForPage(link))
     );
     const pdfBytesArray = (await Promise.all(pdfPromises)).filter(
@@ -251,7 +263,9 @@ export async function main() {
         throw new Error("<main_url> is required");
     }
 
-    logWithTimestamp(`Generating PDF for ${mainURL} and sub-links matching ${urlPattern}`);
+    logWithTimestamp(
+        `Generating PDF for ${mainURL} and sub-links matching ${urlPattern}`,
+    );
     let ctx;
     try {
         ctx = await useBrowserContext();
