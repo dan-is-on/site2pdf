@@ -4,7 +4,7 @@ import { join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { cpus } from "node:os";
 
-import puppeteer, { type Browser, type Page } from "puppeteer";
+import puppeteer, { type Browser, type Page, type HTTPResponse } from "puppeteer";
 import pLimit from "p-limit";
 import { PDFDocument } from "pdf-lib";
 import chromeFinder from "chrome-finder";
@@ -17,6 +17,10 @@ Arguments:
   main_url         The main URL to generate PDF from
   url_pattern      (Optional) Regular expression pattern to match sub-links (default: ^main_url)
 `);
+}
+
+function logWithTimestamp(message: string): void {
+    console.log(`[${new Date().toISOString()}] ${message}`);
 }
 
 type BrowserContext = {
@@ -32,6 +36,7 @@ async function useBrowserContext() {
         timeout: 60000
     });
     const page = (await browser.pages())[0];
+    await page.setUserAgent('Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36');
     return {
         browser,
         page
@@ -64,31 +69,75 @@ async function crawlLinks(
     }
     visited.add(normalizedUrl);
 
-    console.log(`Crawling: ${url}`);
+    logWithTimestamp(`Crawling: ${url}`);
     try {
-        await page.goto(url, { waitUntil: 'networkidle0', timeout: 60000 });
-        // Wait for main content
-        await page.waitForSelector('div.main', { timeout: 15000 });
+        let pageLoaded = false;
+        let errorDetails: string | null = null;
+        let response: HTTPResponse | null = null;
+        for (let attempt = 1; attempt <= 5; attempt++) {
+            try {
+                response = await page.goto(url, { waitUntil: 'networkidle0', timeout: 30000 });
+                pageLoaded = true;
+                break;
+            } catch (error) {
+                errorDetails = error instanceof Error ? error.message : String(error);
+                logWithTimestamp(`Attempt ${attempt}/5: Failed to load ${url}, retrying... (${errorDetails})`);
+                await delay(1000 * Math.pow(2, attempt - 1)); // Exponential backoff: 1s, 2s, 4s, 8s, 16s
+            }
+        }
+
+        if (!pageLoaded) {
+            const status = response ? response.status() : 'No response';
+            const headers = response ? JSON.stringify(response.headers()) : 'No headers';
+            throw new Error(`Failed to load ${url} after retries: ${errorDetails || 'Unknown error'} (Status: ${status}, Headers: ${headers})`);
+        }
+
+        // Retry waiting for content selector
+        let selectorFound = false;
+        for (let attempt = 1; attempt <= 5; attempt++) {
+            try {
+                await page.waitForSelector('div.router-content div.content', { timeout: 5000 });
+                selectorFound = true;
+                break;
+            } catch (error) {
+                logWithTimestamp(`Attempt ${attempt}/5: Waiting for div.router-content div.content failed, retrying...`);
+                await delay(5000);
+            }
+        }
+
+        if (!selectorFound) {
+            // Log DOM structure for debugging
+            const domStructure = await page.evaluate(() => {
+                const classes = Array.from(document.querySelectorAll('div')).map(div => div.className).filter(cls => cls);
+                const bodyLinks = Array.from(document.querySelectorAll('body a[href^="/documentation/virtualization"]')).map(a => a.getAttribute('href'));
+                return `Main div classes: ${JSON.stringify(classes, null, 2)}\nBody links found: ${bodyLinks.length} ${JSON.stringify(bodyLinks.slice(0, 5))}`;
+            });
+            logWithTimestamp(`Failed to find div.router-content div.content after retries. ${domStructure}`);
+            // Fallback to body
+            await page.waitForSelector('body', { timeout: 10000 });
+        }
+
         // Scroll and wait for dynamic content
         await page.evaluate(() => {
             window.scrollTo(0, document.body.scrollHeight);
         });
-        await delay(10000); // Increased delay to 10s
+        await delay(15000); // Increased delay to 15s
 
         const subLinks = await page.evaluate((patternString) => {
             const pattern = new RegExp(patternString);
-            // Target links in main content, with fallback
+            // Target links in content, with fallback
             const links = Array.from(
-                document.querySelectorAll('.main .content a, .main a[href^="/documentation/virtualization"]')
+                document.querySelectorAll('div.router-content div.content .link-block.topic a, div.router-content div.content a.inline-link, body a[href^="/documentation/virtualization"]')
             ) as HTMLAnchorElement[];
             const allLinks = links.map((link) => link.href);
-            console.log(`Raw links found: ${allLinks.length}`, allLinks);
+            console.log(`[${new Date().toISOString()}] Raw links found: ${allLinks.length}`, allLinks);
             return allLinks.filter((href) => pattern.test(href));
         }, urlPattern.source);
 
         const normalizedSubLinks = [...new Set(subLinks.map((link) => normalizeURL(link)))];
-        console.log(`Found links from ${url}:`, normalizedSubLinks);
+        logWithTimestamp(`Found links from ${url}: ${JSON.stringify(normalizedSubLinks)}`);
 
+        await delay(2000); // 2s delay between page requests
         const subLinkPromises = normalizedSubLinks.map((link) =>
             limit(() => crawlLinks(page, link, urlPattern, visited, concurrentLimit))
         );
@@ -96,7 +145,7 @@ async function crawlLinks(
 
         return [normalizedUrl, ...nestedLinks];
     } catch (error) {
-        console.warn(`Warning: Failed to crawl ${url}: ${error}`);
+        logWithTimestamp(`Warning: Failed to crawl ${url}: ${error}`);
         return [];
     }
 }
@@ -111,24 +160,46 @@ export async function generatePDF(
     const visited = new Set<string>();
     
     const allLinks = await crawlLinks(ctx.page, url, urlPattern, visited, concurrentLimit);
-    console.log(`Total unique links to process:`, allLinks);
+    logWithTimestamp(`Total unique links to process: ${JSON.stringify(allLinks)}`);
 
     const pdfDoc = await PDFDocument.create();
 
     const generatePDFForPage = async (link: string) => {
-        console.log(`Generating PDF for ${link}`);
+        logWithTimestamp(`Generating PDF for ${link}`);
         const newPage = await ctx.browser.newPage();
+        await newPage.setUserAgent('Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36');
         let pdfBytes;
         try {
-            await newPage.goto(link, { waitUntil: 'networkidle0', timeout: 60000 });
+            let pageLoaded = false;
+            let errorDetails: string | null = null;
+            let response: HTTPResponse | null = null;
+            for (let attempt = 1; attempt <= 5; attempt++) {
+                try {
+                    response = await newPage.goto(link, { waitUntil: 'networkidle0', timeout: 30000 });
+                    pageLoaded = true;
+                    break;
+                } catch (error) {
+                    errorDetails = error instanceof Error ? error.message : String(error);
+                    logWithTimestamp(`Attempt ${attempt}/5: Failed to load ${link} for PDF, retrying... (${errorDetails})`);
+                    await delay(1000 * Math.pow(2, attempt - 1)); // Exponential backoff
+                }
+            }
+
+            if (!pageLoaded) {
+                const status = response ? response.status() : 'No response';
+                const headers = response ? JSON.stringify(response.headers()) : 'No headers';
+                throw new Error(`Failed to load ${link} for PDF after retries: ${errorDetails || 'Unknown error'} (Status: ${status}, Headers: ${headers})`);
+            }
+
             pdfBytes = await newPage.pdf({ format: "A4" });
-            console.log(`Generated PDF for ${link}`);
+            logWithTimestamp(`Generated PDF for ${link}`);
             return Buffer.from(pdfBytes);
         } catch (error) {
-            console.warn(`Warning: Error occurred while processing ${link}: ${error}`);
+            logWithTimestamp(`Warning: Error occurred while processing ${link}: ${error}`);
             return null;
         } finally {
             await newPage.close();
+            await delay(2000); // 2s delay between page requests
         }
     };
 
@@ -180,13 +251,11 @@ export async function main() {
         throw new Error("<main_url> is required");
     }
 
-    console.log(
-        `Generating PDF for ${mainURL} and sub-links matching ${urlPattern}`,
-    );
+    logWithTimestamp(`Generating PDF for ${mainURL} and sub-links matching ${urlPattern}`);
     let ctx;
     try {
         ctx = await useBrowserContext();
-        const pdfBuffer = await generatePDF(ctx, mainURL, urlPattern, cpus().length);
+        const pdfBuffer = await generatePDF(ctx, mainURL, urlPattern, 1); // Single concurrency
         const slug = generateSlug(mainURL);
         const outputDir = join(process.cwd(), "out");
         const outputPath = join(outputDir, `${slug}.pdf`);
@@ -196,9 +265,9 @@ export async function main() {
         }
 
         writeFileSync(outputPath, new Uint8Array(pdfBuffer));
-        console.log(`PDF saved to ${outputPath}`);
+        logWithTimestamp(`PDF saved to ${outputPath}`);
     } catch (error) {
-        console.error("Error generating PDF:", error);
+        logWithTimestamp(`Error generating PDF: ${error}`);
     } finally {
         await ctx?.browser.close();
     }
