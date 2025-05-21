@@ -175,8 +175,16 @@ export async function generatePDF(
     logWithTimestamp(`Total unique links to process: ${JSON.stringify(uniqueLinks)}`);
 
     const pdfDoc = await PDFDocument.create();
+    const processedUrls = new Set<string>(); // Track URLs to prevent duplicate merging
 
     const generatePDFForPage = async (link: string) => {
+        const normalizedLink = normalizeURL(link);
+        if (processedUrls.has(normalizedLink)) {
+            logWithTimestamp(`Skipping duplicate PDF generation for ${normalizedLink}`);
+            return null;
+        }
+        processedUrls.add(normalizedLink);
+
         logWithTimestamp(`Generating PDF for ${link}`);
         const newPage = await ctx.browser.newPage();
         await newPage.setUserAgent('Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36');
@@ -204,8 +212,8 @@ export async function generatePDF(
             }
 
             pdfBytes = await newPage.pdf({ format: "A4" });
-            logWithTimestamp(`Generated PDF for ${link}`);
-            return Buffer.from(pdfBytes);
+            logWithTimestamp(`Generated PDF for ${link} with ${pdfBytes.length} bytes`);
+            return { url: normalizedLink, buffer: Buffer.from(pdfBytes) };
         } catch (error) {
             logWithTimestamp(`Warning: Error occurred while processing ${link}: ${error}`);
             return null;
@@ -218,23 +226,28 @@ export async function generatePDF(
     const pdfPromises = uniqueLinks.map((link) =>
         limit(() => generatePDFForPage(link))
     );
-    const pdfBytesArray = (await Promise.all(pdfPromises)).filter(
-        (buffer) => buffer !== null
-    ) as Buffer[];
+    const pdfResults = (await Promise.all(pdfPromises)).filter(
+        (result) => result !== null
+    ) as { url: string; buffer: Buffer }[];
 
-    for (const pdfBytes of pdfBytesArray) {
-        if (pdfBytes) {
-            const subPdfDoc = await PDFDocument.load(pdfBytes);
+    for (const { url, buffer } of pdfResults) {
+        if (buffer) {
+            const subPdfDoc = await PDFDocument.load(buffer);
+            const pageCount = subPdfDoc.getPageCount();
+            logWithTimestamp(`Merging PDF for ${url} with ${pageCount} page(s)`);
             const copiedPages = await pdfDoc.copyPages(
                 subPdfDoc,
                 subPdfDoc.getPageIndices(),
             );
             for (const page of copiedPages) {
                 pdfDoc.addPage(page);
+                logWithTimestamp(`Added page for ${url} to final PDF`);
             }
         }
     }
 
+    const finalPageCount = pdfDoc.getPageCount();
+    logWithTimestamp(`Final PDF has ${finalPageCount} pages`);
     const pdfBytes = await pdfDoc.save();
     const pdfBuffer = Buffer.from(pdfBytes);
 
