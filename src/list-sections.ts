@@ -68,6 +68,11 @@ async function delay(ms: number): Promise<void> {
     return new Promise(resolve => setTimeout(resolve, ms));
 }
 
+export interface SectionNode {
+    url: string;
+    children: SectionNode[];
+}
+
 async function getSectionLinks(page: Page, url: string): Promise<string[]> {
     logWithTimestamp(`Scraping sections from: ${url}`);
     try {
@@ -98,6 +103,26 @@ async function getSectionLinks(page: Page, url: string): Promise<string[]> {
         logWithTimestamp(`Error scraping sections: ${error}`);
         return [];
     }
+}
+
+export async function buildSectionTree(page: Page, url: string, visited: Set<string> = new Set(), depth: number = 0): Promise<SectionNode> {
+    const normalizedUrl = normalizeURL(url);
+    if (visited.has(normalizedUrl)) {
+        logWithTimestamp(`Skipping already visited URL in tree: ${normalizedUrl}`);
+        return { url: normalizedUrl, children: [] };
+    }
+    visited.add(normalizedUrl);
+
+    const childUrls = await getSectionLinks(page, url);
+    const children: SectionNode[] = [];
+
+    for (const childUrl of childUrls) {
+        const childNode = await buildSectionTree(page, childUrl, visited, depth + 1);
+        children.push(childNode);
+    }
+
+    logWithTimestamp(`Built tree node for ${url} with ${children.length} children at depth ${depth}`);
+    return { url: normalizedUrl, children };
 }
 
 async function main() {
