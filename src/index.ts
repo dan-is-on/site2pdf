@@ -8,14 +8,17 @@ import puppeteer, { type Browser, type Page, type HTTPResponse } from "puppeteer
 import pLimit from "p-limit";
 import { PDFDocument } from "pdf-lib";
 import chromeFinder from "chrome-finder";
+import { normalizeURL } from "./list-sections.js";
 
 function showHelp() {
     console.log(`
-Usage: site2pdf-cli <main_url> [url_pattern]
+Usage: site2pdf-cli <main_url> [url_pattern] [--content-div <selector>] [--nav-div <selector>]
 
 Arguments:
   main_url         The main URL to generate PDF from
   url_pattern      (Optional) Regular expression pattern to match sub-links (default: ^main_url)
+  --content-div    (Optional) CSS selector for main content (default: div.router-content div.content)
+  --nav-div        (Optional) CSS selector for navigation (default: .card-body .vue-recycle-scroller__item-view a.leaf-link)
 `);
 }
 
@@ -43,23 +46,6 @@ async function useBrowserContext() {
     };
 }
 
-export function normalizeURL(url: string): string {
-    try {
-        const parsedUrl = new URL(url);
-        // Remove trailing slash from pathname, preserve query and no hash
-        parsedUrl.pathname = parsedUrl.pathname.replace(/\/+$/, '');
-        parsedUrl.hash = '';
-        const normalized = parsedUrl.toString();
-        logWithTimestamp(`Normalized URL: ${url} -> ${normalized}`);
-        return normalized;
-    } catch (error) {
-        // Fallback for relative URLs or malformed input
-        const cleanUrl = url.split('#')[0].replace(/\/+$/, '');
-        logWithTimestamp(`Normalized fallback URL: ${url} -> ${cleanUrl}`);
-        return cleanUrl;
-    }
-}
-
 async function delay(ms: number): Promise<void> {
     return new Promise(resolve => setTimeout(resolve, ms));
 }
@@ -69,7 +55,9 @@ async function crawlLinks(
     url: string,
     urlPattern: RegExp,
     visited: Set<string>,
-    concurrentLimit: number
+    concurrentLimit: number,
+    contentDiv: string,
+    navDiv: string
 ): Promise<string[]> {
     const limit = pLimit(concurrentLimit);
     const normalizedUrl = normalizeURL(url);
@@ -93,7 +81,7 @@ async function crawlLinks(
             } catch (error) {
                 errorDetails = error instanceof Error ? error.message : String(error);
                 logWithTimestamp(`Attempt ${attempt}/5: Failed to load ${url}, retrying... (${errorDetails})`);
-                await delay(1000 * Math.pow(2, attempt - 1)); // Exponential backoff: 1s, 2s, 4s, 8s, 16s
+                await delay(1000 * Math.pow(2, attempt - 1));
             }
         }
 
@@ -103,54 +91,64 @@ async function crawlLinks(
             throw new Error(`Failed to load ${url} after retries: ${errorDetails || 'Unknown error'} (Status: ${status}, Headers: ${headers})`);
         }
 
-        // Retry waiting for content selector
         let selectorFound = false;
         for (let attempt = 1; attempt <= 5; attempt++) {
             try {
-                await page.waitForSelector('div.router-content div.content', { timeout: 5000 });
+                await page.waitForSelector(contentDiv, { timeout: 5000 });
                 selectorFound = true;
                 break;
             } catch (error) {
-                logWithTimestamp(`Attempt ${attempt}/5: Waiting for div.router-content div.content failed, retrying...`);
+                logWithTimestamp(`Attempt ${attempt}/5: Waiting for ${contentDiv} failed, retrying...`);
                 await delay(5000);
             }
         }
 
         if (!selectorFound) {
-            // Log DOM structure for debugging
-            const domStructure = await page.evaluate(() => {
-                const classes = Array.from(document.querySelectorAll('div')).map(div => div.className).filter(cls => cls);
-                const bodyLinks = Array.from(document.querySelectorAll('body a[href^="/documentation/virtualization"]')).map(a => a.getAttribute('href'));
-                return `Main div classes: ${JSON.stringify(classes, null, 2)}\nBody links found: ${bodyLinks.length} ${JSON.stringify(bodyLinks.slice(0, 5))}`;
-            });
-            logWithTimestamp(`Failed to find div.router-content div.content after retries. ${domStructure}`);
-            // Fallback to body
-            await page.waitForSelector('body', { timeout: 10000 });
+            logWithTimestamp(`Trying navigation selector: ${navDiv}`);
+            try {
+                await page.waitForSelector(navDiv, { timeout: 5000 });
+                selectorFound = true;
+            } catch (error) {
+                const domStructure = await page.evaluate(() => {
+                    const classes = Array.from(document.querySelectorAll('div')).map(div => div.className).filter(cls => cls);
+                    const bodyLinks = Array.from(document.querySelectorAll('body a[href^="/documentation/virtualization"]')).map(a => a.getAttribute('href'));
+                    return `Main div classes: ${JSON.stringify(classes, null, 2)}\nBody links found: ${bodyLinks.length} ${JSON.stringify(bodyLinks.slice(0, 5))}`;
+                });
+                logWithTimestamp(`Failed to find ${contentDiv} or ${navDiv} after retries. ${domStructure}`);
+                await page.waitForSelector('body', { timeout: 10000 });
+            }
         }
 
-        // Scroll and wait for dynamic content
         await page.evaluate(() => {
             window.scrollTo(0, document.body.scrollHeight);
         });
-        await delay(15000); // Increased delay to 15s
+        await delay(15000);
 
-        const subLinks = await page.evaluate((patternString) => {
+        const subLinks = await page.evaluate((patternString, contentSelector, navSelector) => {
             const pattern = new RegExp(patternString);
-            // Target links in content, with fallback
-            const links = Array.from(
-                document.querySelectorAll('div.router-content div.content .link-block.topic a, div.router-content div.content a.inline-link, body a[href^="/documentation/virtualization"]')
-            ) as HTMLAnchorElement[];
+            let links: HTMLAnchorElement[] = [];
+            const contentLinks = document.querySelectorAll(`${contentSelector} .link-block.topic a, ${contentSelector} a.inline-link`) as NodeListOf<HTMLAnchorElement>;
+            if (contentLinks.length > 0) {
+                links = Array.from(contentLinks);
+            } else {
+                const navLinks = document.querySelectorAll(navSelector) as NodeListOf<HTMLAnchorElement>;
+                if (navLinks.length > 0) {
+                    links = Array.from(navLinks);
+                } else {
+                    links = Array.from(document.querySelectorAll('body a[href^="/documentation/virtualization"]')) as HTMLAnchorElement[];
+                }
+            }
             const allLinks = links.map((link) => link.href);
             console.log(`[${new Date().toISOString()}] Raw links found: ${allLinks.length}`, allLinks);
             return allLinks.filter((href) => pattern.test(href));
-        }, urlPattern.source);
+        }, urlPattern.source, contentDiv, navDiv);
 
         const normalizedSubLinks = [...new Set(subLinks.map((link) => normalizeURL(link)))];
         logWithTimestamp(`Found links from ${url}: ${JSON.stringify(normalizedSubLinks)}`);
 
-        await delay(2000); // 2s delay between page requests
+        await delay(2000);
         const subLinkPromises = normalizedSubLinks.map((link) =>
-            limit(() => crawlLinks(page, link, urlPattern, visited, concurrentLimit))
+            limit(() => crawlLinks(page, link, urlPattern, visited, concurrentLimit, contentDiv, navDiv))
         );
         const nestedLinks = (await Promise.all(subLinkPromises)).flat();
 
@@ -166,16 +164,18 @@ export async function generatePDF(
     url: string,
     urlPattern: RegExp = new RegExp(`^${url}`),
     concurrentLimit: number,
+    contentDiv: string = 'div.router-content div.content',
+    navDiv: string = '.card-body .vue-recycle-scroller__item-view a.leaf-link'
 ): Promise<Buffer> {
     const limit = pLimit(concurrentLimit);
     const visited = new Set<string>();
     
-    const allLinks = await crawlLinks(ctx.page, url, urlPattern, visited, concurrentLimit);
-    const uniqueLinks = [...new Set(allLinks.map(normalizeURL))]; // Deduplicate final links
+    const allLinks = await crawlLinks(ctx.page, url, urlPattern, visited, concurrentLimit, contentDiv, navDiv);
+    const uniqueLinks = [...new Set(allLinks.map(normalizeURL))];
     logWithTimestamp(`Total unique links to process: ${JSON.stringify(uniqueLinks)}`);
 
     const pdfDoc = await PDFDocument.create();
-    const processedUrls = new Set<string>(); // Track URLs to prevent duplicate merging
+    const processedUrls = new Set<string>();
 
     const generatePDFForPage = async (link: string) => {
         const normalizedLink = normalizeURL(link);
@@ -201,7 +201,7 @@ export async function generatePDF(
                 } catch (error) {
                     errorDetails = error instanceof Error ? error.message : String(error);
                     logWithTimestamp(`Attempt ${attempt}/5: Failed to load ${link} for PDF, retrying... (${errorDetails})`);
-                    await delay(1000 * Math.pow(2, attempt - 1)); // Exponential backoff
+                    await delay(1000 * Math.pow(2, attempt - 1));
                 }
             }
 
@@ -211,7 +211,10 @@ export async function generatePDF(
                 throw new Error(`Failed to load ${link} for PDF after retries: ${errorDetails || 'Unknown error'} (Status: ${status}, Headers: ${headers})`);
             }
 
-            pdfBytes = await newPage.pdf({ format: "A4" });
+            pdfBytes = await newPage.pdf({ 
+                format: "A4",
+                printBackground: true
+            });
             logWithTimestamp(`Generated PDF for ${link} with ${pdfBytes.length} bytes`);
             return { url: normalizedLink, buffer: Buffer.from(pdfBytes) };
         } catch (error) {
@@ -219,7 +222,7 @@ export async function generatePDF(
             return null;
         } finally {
             await newPage.close();
-            await delay(2000); // 2s delay between page requests
+            await delay(2000);
         }
     };
 
@@ -237,7 +240,7 @@ export async function generatePDF(
             logWithTimestamp(`Merging PDF for ${url} with ${pageCount} page(s)`);
             const copiedPages = await pdfDoc.copyPages(
                 subPdfDoc,
-                subPdfDoc.getPageIndices(),
+                subPdfDoc.getPageIndices()
             );
             for (const page of copiedPages) {
                 pdfDoc.addPage(page);
@@ -266,23 +269,22 @@ export function generateSlug(url: string): string {
 }
 
 export async function main() {
-    const mainURL = process.argv[2];
-    const urlPattern = process.argv[3]
-        ? new RegExp(process.argv[3])
-        : new RegExp(`^${mainURL}`);
+    const args = process.argv.slice(2);
+    const mainURL = args[0];
+    const urlPattern = args[1] && !args[1].startsWith('--') ? new RegExp(args[1]) : new RegExp(`^${mainURL}`);
+    const contentDiv = args.includes('--content-div') ? args[args.indexOf('--content-div') + 1] : 'div.router-content div.content';
+    const navDiv = args.includes('--nav-div') ? args[args.indexOf('--nav-div') + 1] : '.card-body .vue-recycle-scroller__item-view a.leaf-link';
 
     if (!mainURL) {
         showHelp();
         throw new Error("<main_url> is required");
     }
 
-    logWithTimestamp(
-        `Generating PDF for ${mainURL} and sub-links matching ${urlPattern}`,
-    );
+    logWithTimestamp(`Generating PDF for ${mainURL} and sub-links matching ${urlPattern} with contentDiv=${contentDiv}, navDiv=${navDiv}`);
     let ctx;
     try {
         ctx = await useBrowserContext();
-        const pdfBuffer = await generatePDF(ctx, mainURL, urlPattern, 1); // Single concurrency
+        const pdfBuffer = await generatePDF(ctx, mainURL, urlPattern, 1, contentDiv, navDiv);
         const slug = generateSlug(mainURL);
         const outputDir = join(process.cwd(), "out");
         const outputPath = join(outputDir, `${slug}.pdf`);
