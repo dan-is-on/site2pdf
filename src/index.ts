@@ -8,17 +8,18 @@ import puppeteer, { type Browser, type Page, type HTTPResponse } from "puppeteer
 import pLimit from "p-limit";
 import { PDFDocument } from "pdf-lib";
 import chromeFinder from "chrome-finder";
-import { normalizeURL } from "./list-sections.js";
+import { normalizeURL, buildSectionTree, SectionNode } from "./list-sections.js";
 
 function showHelp() {
     console.log(`
-Usage: site2pdf-cli <main_url> [url_pattern] [--content-div <selector>] [--nav-div <selector>]
+Usage: site2pdf-cli <main_url> [url_pattern] [--content-div <selector>] [--nav-div <selector>] [--split-sections]
 
 Arguments:
   main_url         The main URL to generate PDF from
   url_pattern      (Optional) Regular expression pattern to match sub-links (default: ^main_url)
   --content-div    (Optional) CSS selector for main content (default: div.router-content div.content)
   --nav-div        (Optional) CSS selector for navigation (default: .card-body .vue-recycle-scroller__item-view a.leaf-link)
+  --split-sections (Optional) Generate separate PDFs for main page, sections, and subsections
 `);
 }
 
@@ -159,102 +160,151 @@ async function crawlLinks(
     }
 }
 
+async function generateSinglePDF(
+    ctx: BrowserContext,
+    url: string,
+    contentDiv: string = 'div.router-content div.content'
+): Promise<Buffer> {
+    logWithTimestamp(`Generating PDF for ${url}`);
+    const newPage = await ctx.browser.newPage();
+    await newPage.setUserAgent('Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36');
+    let pdfBytes;
+    try {
+        let pageLoaded = false;
+        let errorDetails: string | null = null;
+        let response: HTTPResponse | null = null;
+        for (let attempt = 1; attempt <= 5; attempt++) {
+            try {
+                response = await newPage.goto(url, { waitUntil: 'networkidle0', timeout: 30000 });
+                pageLoaded = true;
+                break;
+            } catch (error) {
+                errorDetails = error instanceof Error ? error.message : String(error);
+                logWithTimestamp(`Attempt ${attempt}/5: Failed to load ${url} for PDF, retrying... (${errorDetails})`);
+                await delay(1000 * Math.pow(2, attempt - 1));
+            }
+        }
+
+        if (!pageLoaded) {
+            const status = response ? response.status() : 'No response';
+            const headers = response ? JSON.stringify(response.headers()) : 'No headers';
+            throw new Error(`Failed to load ${url} for PDF after retries: ${errorDetails || 'Unknown error'} (Status: ${status}, Headers: ${headers})`);
+        }
+
+        await newPage.waitForSelector(contentDiv, { timeout: 5000 });
+        await newPage.evaluate(() => {
+            window.scrollTo(0, document.body.scrollHeight);
+        });
+        await delay(15000);
+
+        pdfBytes = await newPage.pdf({ 
+            format: "A4",
+            printBackground: true
+        });
+        logWithTimestamp(`Generated PDF for ${url} with ${pdfBytes.length} bytes`);
+        return Buffer.from(pdfBytes);
+    } catch (error) {
+        logWithTimestamp(`Error generating PDF for ${url}: ${error}`);
+        return Buffer.from([]);
+    } finally {
+        await newPage.close();
+        await delay(2000);
+    }
+}
+
 export async function generatePDF(
     ctx: BrowserContext,
     url: string,
     urlPattern: RegExp = new RegExp(`^${url}`),
     concurrentLimit: number,
     contentDiv: string = 'div.router-content div.content',
-    navDiv: string = '.card-body .vue-recycle-scroller__item-view a.leaf-link'
+    navDiv: string = '.card-body .vue-recycle-scroller__item-view a.leaf-link',
+    splitSections: boolean = false
 ): Promise<Buffer> {
     const limit = pLimit(concurrentLimit);
     const visited = new Set<string>();
     
-    const allLinks = await crawlLinks(ctx.page, url, urlPattern, visited, concurrentLimit, contentDiv, navDiv);
-    const uniqueLinks = [...new Set(allLinks.map(normalizeURL))];
-    logWithTimestamp(`Total unique links to process: ${JSON.stringify(uniqueLinks)}`);
-
-    const pdfDoc = await PDFDocument.create();
-    const processedUrls = new Set<string>();
-
-    const generatePDFForPage = async (link: string) => {
-        const normalizedLink = normalizeURL(link);
-        if (processedUrls.has(normalizedLink)) {
-            logWithTimestamp(`Skipping duplicate PDF generation for ${normalizedLink}`);
-            return null;
+    if (splitSections) {
+        const sectionTree = await buildSectionTree(ctx.page, url);
+        const outputDir = join(process.cwd(), "out");
+        if (!existsSync(outputDir)) {
+            mkdirSync(outputDir, { recursive: true });
         }
-        processedUrls.add(normalizedLink);
 
-        logWithTimestamp(`Generating PDF for ${link}`);
-        const newPage = await ctx.browser.newPage();
-        await newPage.setUserAgent('Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36');
-        let pdfBytes;
-        try {
-            let pageLoaded = false;
-            let errorDetails: string | null = null;
-            let response: HTTPResponse | null = null;
-            for (let attempt = 1; attempt <= 5; attempt++) {
-                try {
-                    response = await newPage.goto(link, { waitUntil: 'networkidle0', timeout: 30000 });
-                    pageLoaded = true;
-                    break;
-                } catch (error) {
-                    errorDetails = error instanceof Error ? error.message : String(error);
-                    logWithTimestamp(`Attempt ${attempt}/5: Failed to load ${link} for PDF, retrying... (${errorDetails})`);
-                    await delay(1000 * Math.pow(2, attempt - 1));
+        const generateNodePDF = async (node: SectionNode, parentUrls: Set<string>) => {
+            const normalizedUrl = normalizeURL(node.url);
+            if (parentUrls.has(normalizedUrl)) {
+                logWithTimestamp(`Skipping PDF for ${normalizedUrl} as it’s included in parent`);
+                return;
+            }
+
+            const slug = generateSlug(normalizedUrl);
+            const outputPath = join(outputDir, `${slug}.pdf`);
+            const pdfBuffer = await generateSinglePDF(ctx, normalizedUrl, contentDiv);
+            if (pdfBuffer.length > 0) {
+                writeFileSync(outputPath, new Uint8Array(pdfBuffer));
+                logWithTimestamp(`PDF saved to ${outputPath}`);
+            }
+
+            const childParentUrls = new Set([...parentUrls, normalizedUrl]);
+            for (const child of node.children) {
+                await generateNodePDF(child, childParentUrls);
+            }
+        };
+
+        await generateNodePDF(sectionTree, new Set());
+        return Buffer.from([]); // Return empty buffer as PDFs are saved separately
+    } else {
+        const allLinks = await crawlLinks(ctx.page, url, urlPattern, visited, concurrentLimit, contentDiv, navDiv);
+        const uniqueLinks = [...new Set(allLinks.map(normalizeURL))];
+        logWithTimestamp(`Total unique links to process: ${JSON.stringify(uniqueLinks)}`);
+
+        const pdfDoc = await PDFDocument.create();
+        const processedUrls = new Set<string>();
+
+        const generatePDFForPage = async (link: string) => {
+            const normalizedLink = normalizeURL(link);
+            if (processedUrls.has(normalizedLink)) {
+                logWithTimestamp(`Skipping duplicate PDF generation for ${normalizedLink}`);
+                return null;
+            }
+            processedUrls.add(normalizedLink);
+
+            const pdfBuffer = await generateSinglePDF(ctx, normalizedLink, contentDiv);
+            if (pdfBuffer.length > 0) {
+                return { url: normalizedLink, buffer: pdfBuffer };
+            }
+            return null;
+        };
+
+        const pdfPromises = uniqueLinks.map((link) =>
+            limit(() => generatePDFForPage(link))
+        );
+        const pdfResults = (await Promise.all(pdfPromises)).filter(
+            (result) => result !== null
+        ) as { url: string; buffer: Buffer }[];
+
+        for (const { url, buffer } of pdfResults) {
+            if (buffer) {
+                const subPdfDoc = await PDFDocument.load(buffer);
+                const pageCount = subPdfDoc.getPageCount();
+                logWithTimestamp(`Merging PDF for ${url} with ${pageCount} page(s)`);
+                const copiedPages = await pdfDoc.copyPages(
+                    subPdfDoc,
+                    subPdfDoc.getPageIndices()
+                );
+                for (const page of copiedPages) {
+                    pdfDoc.addPage(page);
+                    logWithTimestamp(`Added page for ${url} to final PDF`);
                 }
             }
-
-            if (!pageLoaded) {
-                const status = response ? response.status() : 'No response';
-                const headers = response ? JSON.stringify(response.headers()) : 'No headers';
-                throw new Error(`Failed to load ${link} for PDF after retries: ${errorDetails || 'Unknown error'} (Status: ${status}, Headers: ${headers})`);
-            }
-
-            pdfBytes = await newPage.pdf({ 
-                format: "A4",
-                printBackground: true
-            });
-            logWithTimestamp(`Generated PDF for ${link} with ${pdfBytes.length} bytes`);
-            return { url: normalizedLink, buffer: Buffer.from(pdfBytes) };
-        } catch (error) {
-            logWithTimestamp(`Warning: Error occurred while processing ${link}: ${error}`);
-            return null;
-        } finally {
-            await newPage.close();
-            await delay(2000);
         }
-    };
 
-    const pdfPromises = uniqueLinks.map((link) =>
-        limit(() => generatePDFForPage(link))
-    );
-    const pdfResults = (await Promise.all(pdfPromises)).filter(
-        (result) => result !== null
-    ) as { url: string; buffer: Buffer }[];
-
-    for (const { url, buffer } of pdfResults) {
-        if (buffer) {
-            const subPdfDoc = await PDFDocument.load(buffer);
-            const pageCount = subPdfDoc.getPageCount();
-            logWithTimestamp(`Merging PDF for ${url} with ${pageCount} page(s)`);
-            const copiedPages = await pdfDoc.copyPages(
-                subPdfDoc,
-                subPdfDoc.getPageIndices()
-            );
-            for (const page of copiedPages) {
-                pdfDoc.addPage(page);
-                logWithTimestamp(`Added page for ${url} to final PDF`);
-            }
-        }
+        const finalPageCount = pdfDoc.getPageCount();
+        logWithTimestamp(`Final PDF has ${finalPageCount} pages`);
+        const pdfBytes = await pdfDoc.save();
+        return Buffer.from(pdfBytes);
     }
-
-    const finalPageCount = pdfDoc.getPageCount();
-    logWithTimestamp(`Final PDF has ${finalPageCount} pages`);
-    const pdfBytes = await pdfDoc.save();
-    const pdfBuffer = Buffer.from(pdfBytes);
-
-    return pdfBuffer;
 }
 
 export function generateSlug(url: string): string {
@@ -274,27 +324,30 @@ export async function main() {
     const urlPattern = args[1] && !args[1].startsWith('--') ? new RegExp(args[1]) : new RegExp(`^${mainURL}`);
     const contentDiv = args.includes('--content-div') ? args[args.indexOf('--content-div') + 1] : 'div.router-content div.content';
     const navDiv = args.includes('--nav-div') ? args[args.indexOf('--nav-div') + 1] : '.card-body .vue-recycle-scroller__item-view a.leaf-link';
+    const splitSections = args.includes('--split-sections');
 
     if (!mainURL) {
         showHelp();
         throw new Error("<main_url> is required");
     }
 
-    logWithTimestamp(`Generating PDF for ${mainURL} and sub-links matching ${urlPattern} with contentDiv=${contentDiv}, navDiv=${navDiv}`);
+    logWithTimestamp(`Generating PDF for ${mainURL} and sub-links matching ${urlPattern} with contentDiv=${contentDiv}, navDiv=${navDiv}, splitSections=${splitSections}`);
     let ctx;
     try {
         ctx = await useBrowserContext();
-        const pdfBuffer = await generatePDF(ctx, mainURL, urlPattern, 1, contentDiv, navDiv);
-        const slug = generateSlug(mainURL);
-        const outputDir = join(process.cwd(), "out");
-        const outputPath = join(outputDir, `${slug}.pdf`);
+        const pdfBuffer = await generatePDF(ctx, mainURL, urlPattern, 1, contentDiv, navDiv, splitSections);
+        if (!splitSections) {
+            const slug = generateSlug(mainURL);
+            const outputDir = join(process.cwd(), "out");
+            const outputPath = join(outputDir, `${slug}.pdf`);
 
-        if (!existsSync(outputDir)) {
-            mkdirSync(outputDir, { recursive: true });
+            if (!existsSync(outputDir)) {
+                mkdirSync(outputDir, { recursive: true });
+            }
+
+            writeFileSync(outputPath, new Uint8Array(pdfBuffer));
+            logWithTimestamp(`PDF saved to ${outputPath}`);
         }
-
-        writeFileSync(outputPath, new Uint8Array(pdfBuffer));
-        logWithTimestamp(`PDF saved to ${outputPath}`);
     } catch (error) {
         logWithTimestamp(`Error generating PDF: ${error}`);
     } finally {
