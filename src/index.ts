@@ -212,6 +212,17 @@ async function generateSinglePDF(
     }
 }
 
+function collectSectionUrls(node: SectionNode, excludeTopLevel: Set<string>, urls: string[] = []): string[] {
+    const normalizedUrl = normalizeURL(node.url);
+    if (!excludeTopLevel.has(normalizedUrl)) {
+        urls.push(normalizedUrl);
+    }
+    for (const child of node.children) {
+        collectSectionUrls(child, excludeTopLevel, urls);
+    }
+    return urls;
+}
+
 export async function generatePDF(
     ctx: BrowserContext,
     url: string,
@@ -231,24 +242,59 @@ export async function generatePDF(
             mkdirSync(outputDir, { recursive: true });
         }
 
-        const generateNodePDF = async (node: SectionNode, parentUrls: Set<string>) => {
+        const generateNodePDF = async (node: SectionNode, globalVisited: Set<string>) => {
             const normalizedUrl = normalizeURL(node.url);
-            if (parentUrls.has(normalizedUrl)) {
-                logWithTimestamp(`Skipping PDF for ${normalizedUrl} as it’s included in parent`);
+            if (globalVisited.has(normalizedUrl)) {
+                logWithTimestamp(`Skipping PDF for ${normalizedUrl} (already processed)`);
                 return;
             }
+            globalVisited.add(normalizedUrl);
 
-            const slug = generateSlug(normalizedUrl);
-            const outputPath = join(outputDir, `${slug}.pdf`);
-            const pdfBuffer = await generateSinglePDF(ctx, normalizedUrl, contentDiv);
-            if (pdfBuffer.length > 0) {
-                writeFileSync(outputPath, new Uint8Array(pdfBuffer));
-                logWithTimestamp(`PDF saved to ${outputPath}`);
+            // Collect all URLs for this section, excluding top-level URLs of subsections
+            const excludeTopLevel = new Set(node.children.map(child => normalizeURL(child.url)));
+            const sectionUrls = collectSectionUrls(node, excludeTopLevel).sort((a, b) => a.localeCompare(b));
+            if (sectionUrls.length === 0) {
+                logWithTimestamp(`No URLs to process for ${normalizedUrl}`);
+                return;
+            }
+            logWithTimestamp(`Processing URLs for ${normalizedUrl}: ${JSON.stringify(sectionUrls)}`);
+
+            const pdfDoc = await PDFDocument.create();
+            const processedUrls = new Set<string>();
+
+            for (const sectionUrl of sectionUrls) {
+                if (processedUrls.has(sectionUrl)) {
+                    logWithTimestamp(`Skipping duplicate URL ${sectionUrl} within PDF`);
+                    continue;
+                }
+                processedUrls.add(sectionUrl);
+
+                const pdfBuffer = await generateSinglePDF(ctx, sectionUrl, contentDiv);
+                if (pdfBuffer.length > 0) {
+                    const subPdfDoc = await PDFDocument.load(pdfBuffer);
+                    const pageCount = subPdfDoc.getPageCount();
+                    logWithTimestamp(`Merging PDF for ${sectionUrl} with ${pageCount} page(s)`);
+                    const copiedPages = await pdfDoc.copyPages(subPdfDoc, subPdfDoc.getPageIndices());
+                    for (const page of copiedPages) {
+                        pdfDoc.addPage(page);
+                        logWithTimestamp(`Added page for ${sectionUrl} to PDF`);
+                    }
+                }
             }
 
-            const childParentUrls = new Set([...parentUrls, normalizedUrl]);
+            const finalPageCount = pdfDoc.getPageCount();
+            if (finalPageCount > 0) {
+                const slug = generateSlug(normalizedUrl);
+                const outputPath = join(outputDir, `${slug}.pdf`);
+                const pdfBytes = await pdfDoc.save();
+                writeFileSync(outputPath, new Uint8Array(pdfBytes));
+                logWithTimestamp(`PDF saved to ${outputPath} with ${finalPageCount} pages`);
+            } else {
+                logWithTimestamp(`No pages generated for ${normalizedUrl}`);
+            }
+
             for (const child of node.children) {
-                await generateNodePDF(child, childParentUrls);
+                await generateNodePDF(child, globalVisited);
             }
         };
 
@@ -256,8 +302,8 @@ export async function generatePDF(
         return Buffer.from([]); // Return empty buffer as PDFs are saved separately
     } else {
         const allLinks = await crawlLinks(ctx.page, url, urlPattern, visited, concurrentLimit, contentDiv, navDiv);
-        const uniqueLinks = [...new Set(allLinks.map(normalizeURL))];
-        logWithTimestamp(`Total unique links to process: ${JSON.stringify(uniqueLinks)}`);
+        const uniqueLinks = [...new Set(allLinks.map(normalizeURL))].sort((a, b) => a.localeCompare(b));
+        logWithTimestamp(`Total unique links to process (sorted): ${JSON.stringify(uniqueLinks)}`);
 
         const pdfDoc = await PDFDocument.create();
         const processedUrls = new Set<string>();

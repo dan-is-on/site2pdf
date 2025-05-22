@@ -152,7 +152,7 @@ export async function buildSectionTree(page: Page, url: string, visited: Set<str
     }
     visited.add(normalizedUrl);
 
-    const childUrls = await getSectionLinks(page, url);
+    const childUrls = [...new Set(await getSectionLinks(page, url))]; // Deduplicate child URLs
     const children: SectionNode[] = [];
 
     for (const childUrl of childUrls) {
@@ -172,7 +172,7 @@ async function main() {
         throw new Error("<base_url> is required");
     }
 
-    logWithTimestamp("list-sections.js version: 2025-05-21T10:00:00Z (with flexible selectors)");
+    logWithTimestamp("list-sections.js version: 2025-05-22T19:00:00+10:00 (with flexible selectors and deduplication)");
     let ctx;
     try {
         ctx = await useBrowserContext();
@@ -181,7 +181,7 @@ async function main() {
 
         const sectionLinks = await getSectionLinks(ctx.page, baseURL);
         const commands = sectionLinks.map(link => 
-            `node bin/site2pdf.js "${link}/" "${link}/.*"`
+            `node bin/index.js "${link}/" "${link}/.*"`
         );
 
         const slug = generateSlug(baseURL);
