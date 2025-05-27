@@ -1,92 +1,138 @@
 # Site2PDF CLI Project Requirements and Plan
 
 ## Project Overview
-The Site2PDF CLI is a Node.js tool that converts web documentation into PDFs, targeting developer.apple.com. It uses Puppeteer for web scraping and pdf-lib for PDF generation, supporting custom selectors, URL patterns, and section splitting. The tool ensures robust crawling, deduplication, alphabetical sorting, and local timezone logging, with plans for cross-platform enhancements and app store compatibility.
+The Site2PDF CLI is a Node.js command-line tool designed to convert web-based documentation, primarily from developer.apple.com, into PDF files. It leverages Puppeteer for web scraping and pdf-lib for PDF generation, supporting customizable content and navigation selectors, URL patterns, and section-based PDF splitting. The tool aims to produce clean, deduplicated, and well-organized PDFs for technical documentation, with robust crawling to handle dynamic web content.
 
 ## Requirements
-- **Input**:
-  - Main URL (e.g., `https://developer.apple.com/documentation/virtualization/vzvirtualmachine/`).
-  - Optional URL pattern (regex, default: `^main_url.*`).
-  - Content selector (default: `div.router-content div.content`).
-  - Navigation selector (default: `.card-body .vue-recycle-scroller__item-view a.leaf-link`).
-  - `--split-sections` flag for section-based PDFs.
+- **Input Parameters**:
+  - Main URL (required, e.g., `https://developer.apple.com/documentation/virtualization/vzvirtualmachine/`).
+  - URL pattern (optional, regex, default: `^main_url.*` to match all sub-links under the main URL).
+  - Content selector (optional, default: `div.router-content div.content` for main content extraction).
+  - Navigation selector (optional, default: `.card-body .vue-recycle-scroller__item-view a.leaf-link` for link extraction).
+  - `--split-sections` flag (optional, enables separate PDFs for main page and sections).
 - **Output**:
-  - PDFs in `out/` directory, named by URL slugs (e.g., `developer-apple-com-documentation-virtualization-vzvirtualmachine.pdf`).
-  - With `--split-sections`, ~3–5 PDFs:
-    - Main page PDF (`vzvirtualmachine.pdf`) with top-level methods/properties (e.g., `/start(completionhandler:)`, `/canstart`).
-    - Section PDFs (e.g., `state-swift-enum.pdf`) grouping all child URLs (e.g., `/stopped`, `/running`), excluding subsection top-level pages from parent PDFs.
-- **Functionality**:
-  - Scrape main URL and sub-links matching the pattern.
-  - Deduplicate URLs within and across PDFs using Sets.
-  - Sort URLs alphabetically within PDFs.
-  - Handle dynamic DOMs with 5 retries, exponential backoff (1–16s), 15s post-scroll delay, 30s timeout, single concurrency (`pLimit(1)`), and User-Agent (`Chrome/91`).
-  - Log timestamps in local system timezone (AEST, UTC+10) with ISO-like format.
-- **Performance**: Minimize redundant scraping, optimize normalization, and handle throttling.
-- **Environment**: macOS 15.4.1 Sequoia, Node.js 20, TypeScript, AEST timezone.
-- **Dependencies**: Puppeteer (Apache-2.0), pdf-lib (MIT), p-limit (MIT), chrome-finder (MIT), TypeScript (Apache-2.0), all permissive for app store compliance.
+  - PDF files saved in the `out/` directory, named using URL slugs (e.g., `developer-apple-com-documentation-virtualization-vzvirtualmachine.pdf`).
+  - With `--split-sections`, generate approximately 3–5 PDFs:
+    - Main page PDF (e.g., `vzvirtualmachine.pdf`) containing the main URL and top-level methods/properties (e.g., `/start(completionhandler:)`, `/canstart`).
+    - Section PDFs (e.g., `state-swift-enum.pdf`) grouping all child URLs under a section (e.g., `/state-swift.enum/stopped`, `/state-swift.enum/running`), excluding subsection top-level pages from parent PDFs to avoid duplication.
+- **Functional Requirements**:
+  - Crawl the main URL and sub-links matching the provided URL pattern, handling dynamic DOM structures with retries and delays.
+  - Deduplicate URLs within and across PDFs using normalized URLs (removing trailing slashes and hashes).
+  - Sort URLs alphabetically within each PDF for both split and non-split modes.
+  - Use the local system timezone (AEST, UTC+10) for log timestamps, supporting daylight savings if applicable.
+  - Support multi-page PDFs for long web content, ensuring no duplicate pages appear within or across PDFs.
+  - Each web page appears in exactly one PDF, corresponding to its section or subsection.
+- **Performance and Reliability**:
+  - Use single concurrency (`pLimit(1)`) to minimize server-side throttling.
+  - Implement 5 retries with exponential backoff (1s, 2s, 4s, 8s, 16s) for network errors.
+  - Apply a 15-second post-scroll delay to ensure dynamic content loads.
+  - Set a 30-second timeout for `page.goto` operations.
+  - Use a User-Agent (`Chrome/91`) to mimic browser behavior and avoid bot detection.
+  - Log detailed error context, including HTTP status, headers, and DOM structure for debugging.
+- **Environment**:
+  - Operating System: macOS 15.4.1 Sequoia
+  - Node.js: Version 20
+  - TypeScript: Latest stable version
+  - Timezone: AEST (UTC+10, with daylight savings support)
+  - Dependencies: Puppeteer (Apache-2.0), pdf-lib (MIT), p-limit (MIT), chrome-finder (MIT), TypeScript (Apache-2.0)
 
 ## Development Plan
 
 ### Step 8: Split Documentation into Sections (In Progress)
-- **Objective**: Implement `--split-sections` to generate ~3–5 PDFs for the main page and sections, grouping related URLs (e.g., `/state-swift.enum/*` in `state-swift-enum.pdf`), with deduplication and alphabetical sorting.
-- **Status**: Incomplete due to excessive PDF generation (29 PDFs instead of ~3–5).
+- **Objective**: Enhance the `--split-sections` functionality to generate approximately 3–5 PDFs, each corresponding to the main page or a major section (e.g., `/state-swift.enum`), grouping related URLs (e.g., all `/state-swift.enum/*` URLs in one PDF), with deduplication across PDFs and alphabetical URL sorting within each PDF.
+- **Status**: Incomplete. The latest test (May 27, 2025, 2:47 AM AEST) generated 29 PDFs due to over-splitting, with duplicate URLs across PDFs and inefficient leaf node scraping.
 - **Sub-Steps**:
   8.1. **Build URL Tree**:
-     - **Actions**: Modified `list-sections.ts` to recursively crawl section/subsection URLs, building a tree structure (`{ url: "/vzvirtualmachine", children: [...] }`). Exported `buildSectionTree` for `index.ts`. Ensured compatibility with `normalizeURL`.
-     - **Status**: Completed. Verified with `/vzvirtualmachine` (29 sections at depth 0, 11 subsections for `/state-swift.enum` at depth 1).
-     - **Validation**: Logs show tree with 29 children at depth 0 (`[2025-05-27T02:51:05.509Z]`).
+     - **Description**: Develop `list-sections.ts` to recursively crawl section and subsection URLs, constructing a tree structure (e.g., `{ url: "/vzvirtualmachine", children: [{ url: "/state-swift.enum", children: ["/stopped", ...] }, ...] }`).
+     - **Status**: Completed. Verified with `/vzvirtualmachine`, producing a tree with 29 children at depth 0 and 11 subsections for `/state-swift.enum` at depth 1. The tree correctly captures section hierarchies.
+     - **Actions Taken**: Implemented `buildSectionTree` to export the URL tree, integrated with `normalizeURL` for consistent deduplication, and added logging for debugging.
   8.2. **Generate Section PDFs** (Current):
-     - **Issue**: `index.ts` generated 29 PDFs (e.g., `state-swift-enum-stopped.pdf`, `start-completionhandler.pdf`) due to `generateNodePDF` creating a PDF for every `SectionNode`, ignoring section grouping. Duplicate URLs appeared across PDFs (e.g., `/stopped` in `vzvirtualmachine.pdf` and `state-swift-enum-stopped.pdf`).
+     - **Description**: Implement `--split-sections` to generate ~3–5 PDFs, each representing a main page or section, with all child URLs (e.g., `/state-swift.enum/stopped`) included in the parent section’s PDF (e.g., `state-swift-enum.pdf`). Ensure deduplication across PDFs, alphabetical URL sorting, and exclusion of subsection top-level pages from parent PDFs.
+     - **Issue**: The current implementation in `index.ts` generated 29 PDFs (e.g., `state-swift-enum-stopped.pdf`, `start-completionhandler.pdf`) because `generateNodePDF` created a PDF for every `SectionNode`, regardless of depth. Duplicate URLs appeared across PDFs (e.g., `/state-swift.enum/stopped` in multiple PDFs) due to insufficient cross-PDF deduplication. Scraping leaf nodes (e.g., `/state-swift.enum/resuming`) was inefficient, taking ~20 seconds each despite returning empty link lists.
      - **Fix**:
-       - Update `generateNodePDF` to generate PDFs only for depth 0 (main page) and depth 1 (sections, e.g., `/state-swift.enum`).
-       - Revise `collectSectionUrls` to group URLs by section (e.g., all `/state-swift.enum/*` URLs under `state-swift-enum.pdf`), using a `Map` to map section keys to URL lists.
-       - Implement global `processedUrls` Set across PDFs to prevent duplicates.
-       - Sort URLs alphabetically in `collectSectionUrls` for each PDF.
-       - Log section grouping, skipped duplicates, and URL order.
+       - Update `collectSectionUrls` in `index.ts` to group URLs by parent section for nodes at depth > 1 (e.g., all `/state-swift.enum/*` URLs under `/state-swift.enum`).
+       - Modify `generateNodePDF` to generate PDFs only for depth 0 (main page) and depth 1 (sections), aggregating child URLs from deeper nodes into the parent section’s PDF.
+       - Implement a global `processedUrls` set across all PDFs to prevent duplicate URL processing, ensuring each URL appears in exactly one PDF.
+       - Optimize `buildSectionTree` in `list-sections.ts` to skip `getSectionLinks` for leaf nodes (depth > 1 with no children), reducing scraping overhead.
+       - Add detailed logging in `generateNodePDF` to track section grouping, PDF counts, and skipped duplicates.
+       - Ensure URLs are sorted alphabetically within each PDF using `localeCompare`.
+     - **Milestones**:
+       - Code implementation and artifact updates: May 28, 2025, 9:00 AM AEST.
+       - Test execution and validation: May 28, 2025, 12:00 PM AEST.
      - **Validation**:
-       - Run `node bin/index.js "https://developer.apple.com/documentation/virtualization/vzvirtualmachine/" "https://developer.apple.com/documentation/virtualization/vzvirtualmachine/.*" --content-div="div.router-content div.content" --nav-div=".card-body .vue-recycle-scroller__item-view a.leaf-link" --split-sections`.
-       - Expect ~3–5 PDFs: `vzvirtualmachine.pdf` (~10–15 pages, including `/canstart`, `/start(completionhandler:)`), `state-swift-enum.pdf` (~12–15 pages, including `/stopped`, `/running`), `graphicsdevices.pdf` (~2 pages), etc.
-       - Verify logs for “Processing URLs for ...” with grouped URLs (e.g., `/state-swift.enum/stopped`, `/running`), “Skipping duplicate” entries, and alphabetical order.
-       - Check PDFs: `state-swift-enum.pdf` includes `/stopped`, `/running`; `vzvirtualmachine.pdf` excludes `/state-swift.enum/*` top-level pages.
-     - **Deadline**: May 28, 2025, 6:00 PM AEST.
-  8.3. **Add Custom Ignore Patterns**:
-     - **Actions**: Implement `--ignore=<pattern1>,<pattern2>,...` CLI argument for regex patterns (e.g., `/vzerror/.*,https://docs\.oasis-open\.org/.*`). Parse into `RegExp` array. Filter links in `crawlLinks` and `buildSectionTree`. Log ignored URLs.
-     - **Status**: Pending, dependent on Step 8.2.
-     - **Validation**: Test with `--ignore="/swift/true,.*oasis.*"`. Verify logs show skipped URLs and PDFs exclude filtered content.
-  8.4. **Add Print Margins**:
-     - **Actions**: Update `newPage.pdf` in `generateSinglePDF` with `margin: { top: 72, bottom: 72, left: 72, right: 72 }` (1-inch margins). Verify content reflows, potentially increasing page count. Log margin application.
+       - Run `npm run build` to compile updated `index.ts` and `list-sections.ts`.
+       - Execute test command: `node bin/index.js "https://developer.apple.com/documentation/virtualization/vzvirtualmachine/" "https://developer.apple.com/documentation/virtualization/vzvirtualmachine/.*" --content-div="div.router-content div.content" --nav-div=".card-body .vue-recycle-scroller__item-view a.leaf-link" --split-sections`.
+       - Expect ~3–5 PDFs in `out/` (e.g., `vzvirtualmachine.pdf`, `state-swift-enum.pdf`, possibly `graphicsdevices.pdf`).
+       - Verify `state-swift-enum.pdf` includes all enum cases (e.g., `/stopped`, `/running`, `/paused`, approximately 12–15 pages total) without duplicates.
+       - Confirm `vzvirtualmachine.pdf` includes top-level methods/properties (e.g., `/start(completionhandler:)`, `/canstart`) but excludes subsection top-level pages (e.g., `/state-swift.enum/stopped`).
+       - Check logs for “Scraping sections from:” only at depth 0–1, “Skipping duplicate” for deduplicated URLs, and section grouping details.
+       - Ensure no unexpected URLs (e.g., `/swift/true`) and no runtime errors or navigation timeouts.
+  8.3. **Optimize Performance**:
+     - **Description**: Reduce scraping time by introducing concurrent requests (e.g., `pLimit(2)`) for non-leaf nodes and caching frequently accessed pages.
+     - **Status**: Pending, to be addressed after Step 8.2 completion.
+     - **Actions Planned**: Modify `crawlLinks` and `buildSectionTree` to support limited concurrency, implement a cache for page content, and log performance metrics.
+  8.4. **Add Section Metadata**:
+     - **Description**: Enhance PDFs with section titles or metadata (e.g., extracted from `<h1>` or page titles) to improve readability and navigation.
      - **Status**: Pending.
-     - **Validation**: Check PDFs for 1-inch margins and consistent content layout.
-  8.5. **Prevent Unintended PDF Overwrites**:
-     - **Actions**: Add `--overwrite` CLI flag (default: false). Check `outputPath` existence before writing. Log skipped PDFs or overwrite confirmation. Optionally append timestamp if `--overwrite=false` (e.g., `vzvirtualmachine-20250528T1800.pdf`).
+     - **Actions Planned**: Update `generateSinglePDF` to extract titles and embed as PDF metadata or headers.
+  8.5. **Handle Edge Cases**:
+     - **Description**: Test and handle malformed URLs, missing selectors, and network failures to ensure robustness.
      - **Status**: Pending.
-     - **Validation**: Test with existing PDFs and `--overwrite=false`. Verify new PDFs have timestamped names or are skipped.
-  8.6. **Standardize Build Process**:
-     - **Actions**: Update `tsconfig.json` to include `["src/**/*.ts"]`. Ensure `list-sections.ts` compiles to `dist/`. Document setup in README. Log build errors.
+     - **Actions Planned**: Add test cases for invalid inputs and enhance error handling in `crawlLinks` and `generateSinglePDF`.
+  8.6. **Implement Unit Tests**:
+     - **Description**: Develop unit tests for section splitting, deduplication, and sorting to ensure reliability.
      - **Status**: Pending.
-     - **Validation**: Run `npm run build`. Verify `dist/` includes all modules.
-  8.7. **Use Local System Timezone for Logs**:
-     - **Actions**: Update `logWithTimestamp` to use `toLocaleString` with AEST (UTC+10, handling daylight savings). Ensure ISO-like format with offset (e.g., `2025-05-28T18:00:00+10:00`). Document in README.
+     - **Actions Planned**: Use Jest to create tests for `collectSectionUrls`, `generateNodePDF`, and `buildSectionTree`.
+  8.7. **Support Local Timezone for Logs**:
+     - **Description**: Configure `logWithTimestamp` to use the local system timezone (AEST, UTC+10, with daylight savings) via `toLocaleString`, ensuring ISO-like format with offset (e.g., `2025-05-27T17:26:07+10:00`).
      - **Status**: Pending.
-     - **Validation**: Check logs for AEST timestamps with correct offset.
-  9. **Enhance Ignore Pattern Flexibility**:
-     - **Actions**: Extend `--ignore` to support dynamic patterns (e.g., based on URL tree). Allow combination with `--split-sections`. Document in help message.
-     - **Status**: Pending.
-     - **Validation**: Test with dynamic patterns. Verify filtered URLs in logs and PDFs.
-  10. **Update README with All Capabilities**:
-      - **Actions**: Retain original README unless incorrect. Add macOS 15.4.1 setup (`brew install node`, `brew install --cask google-chrome`). Mark Linux as untested. Document `--content-div`, `--nav-div`, `--ignore`, `--split-sections`, `--overwrite`, timezone. Include contribution guidelines and `tsconfig.json` setup.
-      - **Status**: Pending.
-      - **Validation**: Verify README accuracy with macOS setup and CLI usage.
-  11. **Explore C# Port for App Store Distribution**:
-      - **Actions**: Port to C# with .NET MAUI. Use `HtmlAgilityPack` + `HttpClient` for crawling, WebView (`WKWebView`, `WebView`, `WebView2`) for dynamic content, `PDFSharp` for PDFs. Implement GUI for URL/pattern input. Offload crawling to server for iOS/Android. Ensure app store compliance (privacy manifests, signing).
-      - **Status**: Pending.
-      - **Validation**: Prototype GUI and PDF generation on macOS. Verify app store submission readiness.
+     - **Actions Planned**: Update `logWithTimestamp` in `index.ts` and `list-sections.ts`, document in README.
+- **Lessons Applied**:
+  - Hierarchical section grouping to prevent over-splitting (May 27, 2025, 5:26 PM AEST).
+  - Regular expression validation to avoid runtime errors (May 27, 2025).
+  - Accurate URL pattern matching for complete tree construction (May 27, 2025).
+  - Optimized URL normalization to reduce redundancy (May 27, 2025).
+  - Robust crawling with dynamic selectors and anti-throttling measures (May 27, 2025).
+  - Mandatory build updates to reflect code changes (May 27, 2025).
+  - Explicit type casts and null guards for TypeScript and pdf-lib reliability (May 27, 2025).
+
+## Environment
+- **Operating System**: macOS 15.4.1 Sequoia
+- **Node.js**: Version 20
+- **TypeScript**: Latest stable version
+- **Timezone**: AEST (UTC+10, with daylight savings support)
+- **Dependencies**:
+  - Puppeteer (Apache-2.0): Web scraping and page rendering
+  - pdf-lib (MIT): PDF generation and merging
+  - p-limit (MIT): Concurrency control
+  - chrome-finder (MIT): Chrome executable detection
+  - TypeScript (Apache-2.0): Static typing and compilation
 
 ## Notes
-- **Environment**: macOS 15.4.1 Sequoia, Node.js 20, TypeScript, AEST (UTC+10).
-- **Keybindings**: VS Code: `Option+Command+A` (stage), `Option+Command+C` (commit). Confirm `Option+Command+P` (push) and `git.commitAll` vs. `git.commit`.
-- **Rename**: `bin/site2pdf.js` renamed to `bin/index.js`. Verify `package.json` has `"bin": { "site2pdf": "bin/index.js" }`.
-- **Testing**: Run `npm run build` before tests. Share logs, PDF counts, and page content (e.g., OCR excerpts) for debugging.
-- **Dependency Licenses**: All dependencies (Puppeteer, pdf-lib, etc.) are permissive, requiring license notices for app store compliance.
-- **Contribution**: Include `LessonsLearned.md`, `README.md`, `LICENSE` (MIT), `.gitignore` (`node_modules`, `dist/`, `out/`).
-- **Log Reference**: Latest test (May 27, 2025, 2:47–3:07 AEST) showed 29 PDFs, highlighting over-splitting.
+- **VS Code Keybindings**:
+  - Configured: `Option+Command+A` for staging, `Option+Command+C` for committing.
+  - Pending Confirmation: `Option+Command+P` for pushing, preference for `git.commitAll` or `git.commit`.
+- **File Rename**:
+  - `bin/site2pdf.js` renamed to `bin/index.js`.
+  - Verify `package.json` includes `"bin": { "site2pdf": "bin/index.js" }` (artifact_id: `4ba5e453-f9e8-45c9-9dc6-fc9e1d4daf18`).
+  - Test with `npx site2pdf --help` to confirm CLI functionality.
+- **Testing Workflow**:
+  - Run `npm run build` after modifying `src/index.ts` or `src/list-sections.ts` to update `dist/`.
+  - Share test logs, PDF counts, and details of any duplicate pages or errors.
+  - Current test command: `node bin/index.js "https://developer.apple.com/documentation/virtualization/vzvirtualmachine/" "https://developer.apple.com/documentation/virtualization/vzvirtualmachine/.*" --content-div="div.router-content div.content" --nav-div=".card-body .vue-recycle-scroller__item-view a.leaf-link" --split-sections`.
+- **Contribution Guidelines**:
+  - Maintain `LessonsLearned.md`, `README.md`, `LICENSE` (MIT), and `.gitignore` (excluding `node_modules`, `dist/`, `out/`).
+  - Follow TypeScript style guidelines, include detailed test results, and document changes in `LessonsLearned.md`.
+- **Dependency Licenses**: All dependencies are permissive and app store-compatible, requiring license notices in distribution.
+
+## Example Usage (Current)
+```bash
+node bin/index.js "https://developer.apple.com/documentation/virtualization/vzvirtualmachine/" "https://developer.apple.com/documentation/virtualization/vzvirtualmachine/.*" --content-div="div.router-content div.content" --nav-div=".card-body .vue-recycle-scroller__item-view a.leaf-link" --split-sections
+```
+Generates separate PDFs for sections, but the latest test produced 29 PDFs with duplicates and unsorted URLs.
+
+## Example Usage (Target for Step 8.2)
+```bash
+node bin/index.js "https://developer.apple.com/documentation/virtualization/vzvirtualmachine/" "https://developer.apple.com/documentation/virtualization/vzvirtualmachine/.*" --content-div="div.router-content div.content" --nav-div=".card-body .vue-recycle-scroller__item-view a.leaf-link" --split-sections
+```
+Expected to generate ~3–5 PDFs (e.g., `vzvirtualmachine.pdf`, `state-swift-enum.pdf`), with deduplicated, alphabetically sorted URLs, local timezone timestamps, and no duplicate pages.

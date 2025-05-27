@@ -1,147 +1,147 @@
 # Lessons Learned - Site2PDF CLI
 
-This document captures lessons learned during the development of `site2pdf-cli`, a Node.js tool for converting web documentation into PDFs using Puppeteer and pdf-lib. These insights ensure robust crawling, PDF generation, and TypeScript compatibility on macOS 15.4.1 Sequoia, guiding ongoing and future development.
+This document captures lessons learned during the development of `site2pdf-cli`, a Node.js tool for converting web documentation into PDFs using Puppeteer for web scraping and pdf-lib for PDF generation. These insights, derived from development on macOS 15.4.1 Sequoia, guide ongoing and future work to ensure robust functionality, TypeScript compatibility, and efficient PDF output.
 
 ## Lessons Learned
 
 ### Initial Development and TypeScript Fixes (Steps 1–4)
-1. **Use Compatible Puppeteer APIs for TypeScript Compliance**
+1. **Ensure Puppeteer API Compatibility with TypeScript to Prevent Compilation Errors**
    - **Date**: May 27, 2025
-   - **Context**: Early development faced TypeScript compilation errors with `page.waitForTimeout`, which lacked consistent support in Puppeteer’s type definitions.
-   - **Issue**: Unsupported APIs caused build failures, disrupting crawling workflows.
-   - **Impact**: Blocked feature implementation and testing.
-   - **Resolution**: Replace unsupported APIs with alternatives, such as a `delay` function using `setTimeout`. Cross-check APIs against Puppeteer’s TypeScript definitions.
-   - **Action Taken**: Implemented `delay` in `index.ts` and `list-sections.ts` for reliable timeouts.
+   - **Context**: Early development faced TypeScript compilation errors when using `page.waitForTimeout`, which lacked consistent support in Puppeteer’s type definitions across versions.
+   - **Issue**: The `waitForTimeout` method caused build failures due to missing type definitions, disrupting the crawling workflow in `index.ts`.
+   - **Impact**: Blocked compilation, delaying implementation of core crawling and PDF generation features.
+   - **Resolution**: Replace unsupported APIs with TypeScript-compatible alternatives, such as a custom `delay` function using `setTimeout`. Cross-reference Puppeteer’s documentation and type definitions to confirm compatibility.
+   - **Action Taken**: Implemented a `delay` function in `index.ts` and `list-sections.ts` to handle timeouts reliably, ensuring TypeScript compliance.
 
-2. **Ensure Proper Type Casting for DOM Elements in Puppeteer Evaluations**
+2. **Use Explicit Type Casts for DOM Elements in Puppeteer Evaluations**
    - **Date**: May 27, 2025
-   - **Context**: Extracting `href` in `page.evaluate` triggered TypeScript errors because `Element` lacks `href`.
-   - **Issue**: Missing casts to `HTMLAnchorElement` caused compilation failures.
-   - **Impact**: Prevented link extraction for crawling.
-   - **Resolution**: Explicitly cast `Element` to `HTMLAnchorElement` in `crawlLinks` and `getSectionLinks`. Validate DOM types against Puppeteer’s API.
-   - **Action Taken**: Updated `page.evaluate` with `as HTMLAnchorElement[]`.
+   - **Context**: Extracting `href` attributes from links in `page.evaluate` triggered TypeScript errors because `Element` objects lacked `href` properties.
+   - **Issue**: The generic `Element` type required casting to `HTMLAnchorElement` to safely access `href`, impacting link extraction in `crawlLinks` and `getSectionLinks`.
+   - **Impact**: Compilation errors prevented the tool from collecting sub-links, halting URL tree construction.
+   - **Resolution**: Cast `Element` to `HTMLAnchorElement` within `page.evaluate` using `as HTMLAnchorElement[]`. Validate DOM types against Puppeteer’s API and TypeScript’s lib.dom.d.ts.
+   - **Action Taken**: Updated `crawlLinks` and `getSectionLinks` to use correct type casts, ensuring robust link extraction.
 
-3. **Simplify Buffer Type Handling in pdf-lib Operations**
+3. **Simplify Buffer Type Handling to Avoid Complex TypeScript Predicates**
    - **Date**: May 27, 2025
-   - **Context**: Merging PDFs with `pdf-lib` caused TypeScript errors due to `ArrayBufferLike` vs. `ArrayBuffer` mismatches in `pdfBytesArray`.
-   - **Issue**: Complex type predicates for `Buffer` were error-prone and unnecessary.
-   - **Impact**: Delayed PDF merging functionality.
-   - **Resolution**: Use direct type assertions (e.g., `as Buffer[]`) and explicit null checks before `PDFDocument.load`. Avoid over-complicated type predicates.
-   - **Action Taken**: Simplified `generatePDF` with `as Buffer[]` and null guards.
+   - **Context**: Merging PDFs with `pdf-lib` caused TypeScript errors in `generatePDF` due to conflicts between `ArrayBufferLike` and `ArrayBuffer` when filtering `pdfBytesArray`.
+   - **Issue**: Complex type predicates for `Buffer` objects were error-prone and overly verbose, complicating PDF merging logic.
+   - **Impact**: Delayed implementation of multi-page PDF generation, risking runtime errors during buffer processing.
+   - **Resolution**: Use direct type assertions (e.g., `as Buffer[]`) and add explicit null checks before `PDFDocument.load` to ensure type safety without convoluted predicates.
+   - **Action Taken**: Simplified `generatePDF` with `as Buffer[]` assertions and null guards, streamlining PDF merging.
 
-4. **Guard Against Null Returns in pdf-lib API Calls**
+4. **Implement Null Guards for pdf-lib API Calls to Prevent Runtime Errors**
    - **Date**: May 27, 2025
-   - **Context**: `PDFDocument.load` assumed non-null input, causing runtime errors for empty `pdfBytes`.
-   - **Issue**: TypeScript didn’t flag potential nulls, leading to crashes during PDF merging.
-   - **Impact**: Unreliable PDF generation.
-   - **Resolution**: Add explicit null checks for `pdfBytes` before `PDFDocument.load`. Document API assumptions for safety.
-   - **Action Taken**: Added guards in `generateSinglePDF` and `generatePDF`.
+   - **Context**: The `PDFDocument.load` method in `generateSinglePDF` assumed non-null input, causing runtime errors when `pdfBytes` was empty due to failed page loads.
+   - **Issue**: TypeScript didn’t flag potential null returns, leading to crashes during PDF generation.
+   - **Impact**: Unreliable PDF output, especially under network errors or timeouts, disrupted test runs.
+   - **Resolution**: Add explicit null checks for `pdfBytes` before calling `PDFDocument.load`. Review `pdf-lib` API documentation to identify other potential null cases.
+   - **Action Taken**: Added null guards in `generateSinglePDF` and `generatePDF`, ensuring stable PDF generation.
 
-5. **Verify TypeScript Syntax During Code Fixes**
+5. **Validate TypeScript Constructs to Avoid Syntax Errors During Fixes**
    - **Date**: May 27, 2025
-   - **Context**: A fix for `generatePDF` introduced a typo (`Set<string>()` vs. `new Set<string>()`), causing new compilation errors.
-   - **Issue**: Incorrect constructor syntax broke deduplication logic.
-   - **Impact**: Blocked test execution and delayed progress.
-   - **Resolution**: Review code changes for syntax accuracy. Enable TypeScript linters to catch constructor errors.
-   - **Action Taken**: Corrected to `new Set<string>()` in `index.ts`.
+   - **Context**: While fixing deduplication in `generatePDF`, a typo (`Set<string>()` instead of `new Set<string>()`) introduced new compilation errors.
+   - **Issue**: Incorrect constructor syntax broke the `visited` Set instantiation, preventing URL deduplication.
+   - **Impact**: Blocked test execution, requiring additional debugging cycles.
+   - **Resolution**: Carefully review code changes for syntax accuracy, especially during fixes. Enable TypeScript linters (e.g., ESLint) to catch constructor errors.
+   - **Action Taken**: Corrected to `new Set<string>()` in `index.ts`, reinforcing code review practices.
 
-### Robust Crawling and Deduplication (Steps 5–6)
-6. **Implement Robust Crawling with Dynamic Selectors and Anti-Throttling Measures**
+### Robust Crawling and Error Handling (Step 5)
+6. **Build Robust Crawling Logic with Dynamic Selectors and Anti-Throttling Measures**
    - **Date**: May 27, 2025
-   - **Context**: Initial crawling failed due to incorrect selectors (`div.main`), dynamic DOMs, and server-side rate limiting (`net::ERR_ABORTED`).
-   - **Issue**: Hardcoded selectors missed content, and high concurrency triggered throttling. Insufficient delays led to incomplete page loads.
-   - **Impact**: Generated incomplete URL trees and failed PDFs.
+   - **Context**: Initial crawling attempts failed due to incorrect selectors (`div.main`), dynamic DOM structures on developer.apple.com, and server-side rate limiting (`net::ERR_ABORTED` errors).
+   - **Issue**: Hardcoded selectors missed content, high concurrency triggered throttling, and insufficient delays led to incomplete page loads. This affected `crawlLinks` and `getSectionLinks`, resulting in incomplete URL trees.
+   - **Impact**: Failed to collect sub-links, producing incomplete or empty PDFs and blocking progress on PDF generation features.
    - **Resolution**:
-     - Use precise selectors (`div.router-content div.content`, `.card-body .vue-recycle-scroller__item-view a.leaf-link`).
-     - Implement 5 retries with exponential backoff (1–16s), 15s post-scroll delay, 30s `page.goto` timeout, single concurrency (`pLimit(1)`), and User-Agent (`Chrome/91`).
-     - Log HTTP status, headers, and DOM structure (div classes, 5 body links) for errors.
-     - Add ISO timestamps via `logWithTimestamp` for timing diagnostics.
-   - **Action Taken**: Updated `crawlLinks` and `getSectionLinks` with robust logic and enhanced logging.
+     - Use specific, robust selectors (`div.router-content div.content` for content, `.card-body .vue-recycle-scroller__item-view a.leaf-link` for navigation).
+     - Implement 5 retries with exponential backoff (1s, 2s, 4s, 8s, 16s) to handle transient network errors.
+     - Add a 15-second post-scroll delay to ensure dynamic content loads, a 30-second `page.goto` timeout, and single concurrency (`pLimit(1)`) to avoid throttling.
+     - Set a User-Agent (`Chrome/91`) to mimic browser behavior and reduce bot detection.
+     - Log detailed error context, including HTTP status, headers, and DOM structure (div classes, up to 5 body links) for failed selectors.
+     - Use ISO timestamps (via `logWithTimestamp`) to diagnose timing issues.
+   - **Action Taken**: Updated `crawlLinks` and `getSectionLinks` with enhanced logic, retries, delays, and logging, ensuring reliable URL collection.
 
-7. **Ensure Builds Reflect Source Changes**
+7. **Mandate Build Updates to Reflect Source Code Changes**
    - **Date**: May 27, 2025
-   - **Context**: Tests used outdated `dist/index.js` because `npm run build` was skipped after updating `src/index.ts`.
-   - **Issue**: Outdated builds masked fixes, causing persistent errors.
-   - **Impact**: Delayed debugging and feature validation.
-   - **Resolution**: Mandate `npm run build` after source changes. Include build instructions in all test workflows.
-   - **Action Taken**: Added `npm run build` to test instructions.
-
-8. **Normalize URLs Consistently to Prevent Duplication**
-   - **Date**: May 27, 2025
-   - **Context**: Trailing slashes and hashes caused duplicate URLs in crawling and PDF generation.
-   - **Issue**: Inconsistent `normalizeURL` logic led to redundant processing (e.g., `/vzvirtualmachine` vs. `/vzvirtualmachine/`).
-   - **Impact**: Bloated URL trees and duplicate PDF pages.
-   - **Resolution**: Use `new URL` in `normalizeURL` to remove trailing slashes and hashes while preserving query parameters. Deduplicate in `visited` Set for crawling and `processedUrls` for PDFs.
-   - **Action Taken**: Enhanced `normalizeURL` and added deduplication in `index.ts` and `list-sections.ts`.
+   - **Context**: Tests run without `npm run build` used outdated `dist/index.js`, masking fixes made to `src/index.ts`.
+   - **Issue**: Failure to rebuild after source changes caused persistent errors, as the runtime executed stale code.
+   - **Impact**: Delayed debugging and feature validation, leading to confusion during test cycles.
+   - **Resolution**: Require `npm run build` after any source file changes to update `dist/`. Explicitly document this step in test instructions and development workflows.
+   - **Action Taken**: Added `npm run build` to all test instructions and emphasized its importance in development notes.
 
 ### Section Splitting and PDF Generation (Step 8)
-9. **Define Semantic Section Boundaries for PDF Generation**
-   - **Date**: May 27, 2025, 5:12 PM AEST
-   - **Context**: The `--split-sections` flag generated 29 PDFs (e.g., `state-swift-enum-stopped.pdf`) instead of ~3–5 (e.g., `state-swift-enum.pdf` for all enum cases).
-   - **Issue**: `generateNodePDF` created a PDF for every `SectionNode`, ignoring hierarchical grouping requirements.
-   - **Impact**: Bloated output, reduced usability, and failed Step 8.2.
-   - **Resolution**: Group URLs by section (depth 0–1 or semantic parent, e.g., `/state-swift.enum/*`). Limit PDFs to top-level sections. Use global deduplication across PDFs.
-   - **Action Taken**: Updating `index.ts` to group URLs in `collectSectionUrls` and restrict `generateNodePDF` to depth 0–1.
+8. **Enforce Hierarchical Section Grouping to Limit PDF Generation to Semantic Sections**
+   - **Date**: May 27, 2025, 5:26 PM AEST
+   - **Context**: The `--split-sections` flag in `index.ts` generated 29 PDFs (e.g., `state-swift-enum-stopped.pdf`, `start-completionhandler.pdf`) instead of the expected ~3–5 (e.g., `vzvirtualmachine.pdf`, `state-swift-enum.pdf` grouping all enum cases). This occurred during tests on May 27, 2025, 2:47 AM AEST.
+   - **Issue**: The `generateNodePDF` function created a PDF for every `SectionNode` in the URL tree, regardless of depth or semantic role, misinterpreting Step 8.2’s requirement for “separate PDFs for main page, sections, and subsections.” Additionally, the absence of cross-PDF deduplication led to duplicate URLs (e.g., `/state-swift.enum/stopped` appearing in multiple PDFs). Inefficient scraping of leaf nodes (e.g., `/state-swift.enum/resuming`) further slowed execution.
+   - **Impact**: The excessive number of PDFs (29 instead of ~3–5) bloated the output, reduced usability, and included redundant content, failing Step 8.2’s requirements. Slow scraping (~20 seconds per leaf node) extended test runtimes unnecessarily.
+   - **Resolution**:
+     - Define sections as nodes at depth 0 (main page) and depth 1 (major sections, e.g., `/state-swift.enum`), with semantic grouping for child URLs (e.g., all `/state-swift.enum/*` URLs in one PDF).
+     - Modify `generateNodePDF` to generate PDFs only for depth 0–1 nodes, aggregating child URLs (depth > 1) into the parent section’s PDF.
+     - Implement a global `processedUrls` set across all PDFs to prevent duplicate URL processing.
+     - Optimize `list-sections.ts` to skip `getSectionLinks` for leaf nodes (depth > 1 with no children) to reduce scraping overhead.
+     - Add detailed logging to track section grouping, PDF counts, and skipped duplicates.
+     - Validate output against expected PDF count (~3–5) and page counts (e.g., `state-swift-enum.pdf` with ~12–15 pages for enum cases).
+   - **Action Taken**: Updates in progress to `index.ts` for section grouping and deduplication, and to `list-sections.ts` for leaf node optimization. Test results pending.
 
-10. **Validate Regular Expressions to Prevent Runtime Failures**
-    - **Date**: May 27, 2025
-    - **Context**: A `SyntaxError: Invalid regular expression` halted execution due to unescaped `urlPattern` in `index.ts`.
-    - **Issue**: `new RegExp(args[1])` didn’t escape special characters (e.g., `://`), producing an invalid pattern.
-    - **Impact**: No PDFs generated, blocking Step 8.2.
-    - **Resolution**: Escape regex characters with `escapeRegExp`. Validate patterns with try-catch. Test edge cases (e.g., URLs with `.*`).
-    - **Action Taken**: Added `escapeRegExp` and validation in `index.ts` `main`.
+9. **Validate Regular Expression Construction to Prevent Runtime Errors**
+   - **Date**: May 27, 2025
+   - **Context**: A test run failed with a `SyntaxError: Invalid regular expression` due to an unescaped `urlPattern` in `index.ts`’s `main` function, processing `args[1]` (`https://developer.apple.com/documentation/virtualization/vzvirtualmachine/.*`).
+   - **Issue**: The `new RegExp(args[1])` call didn’t escape special characters (e.g., `://`, `/`, `.*`), producing an invalid regex pattern (`^https:\/`) that crashed the tool.
+   - **Impact**: No PDFs were generated, completely blocking Step 8.2 progress and requiring urgent fixes.
+   - **Resolution**: Implement an `escapeRegExp` function to sanitize regex strings. Wrap `new RegExp` in a try-catch block to validate patterns. Test regex construction with edge cases (e.g., URLs with slashes, wildcards).
+   - **Action Taken**: Added `escapeRegExp` and try-catch validation in `index.ts`’s `main`, ensuring robust pattern handling.
 
-11. **Ensure Accurate URL Pattern Matching for Tree Construction**
+10. **Ensure Accurate URL Pattern Matching for Complete URL Tree Construction**
     - **Date**: May 27, 2025
-    - **Context**: Tests generated only one PDF because the main URL was skipped due to a pattern mismatch in `buildSectionTree`.
-    - **Issue**: Strict `urlPattern.test(normalizedUrl)` rejected valid URLs due to trailing `.*` or slash issues.
-    - **Impact**: Incomplete URL tree, missing section PDFs.
-    - **Resolution**: Normalize patterns to match base URLs. Debug mismatches with detailed logging (e.g., pattern source, test result).
-    - **Action Taken**: Simplified pattern testing in `list-sections.ts`.
+    - **Context**: Earlier tests (e.g., May 27, 2025, 1:39 AM AEST) produced only one PDF because `buildSectionTree` in `list-sections.ts` incorrectly skipped the main URL due to a pattern mismatch.
+    - **Issue**: The `urlPattern.test(normalizedUrl)` check in `buildSectionTree` rejected valid URLs (e.g., `https://developer.apple.com/documentation/virtualization/vzvirtualmachine`) due to trailing `.*` or slash inconsistencies in the regex pattern.
+    - **Impact**: An incomplete URL tree omitted section and subsection PDFs, failing Step 8.2’s requirement for comprehensive section splitting.
+    - **Resolution**: Normalize regex patterns to match base URLs without trailing wildcards or slashes. Enhance logging to debug pattern mismatches, including the URL, pattern, and test result.
+    - **Action Taken**: Simplified pattern testing in `list-sections.ts` to ensure valid URLs are included, with detailed logging for diagnostics.
 
-12. **Optimize URL Normalization to Reduce Redundancy**
+11. **Optimize URL Normalization to Eliminate Redundant Processing**
     - **Date**: May 27, 2025
-    - **Context**: Logs showed multiple `Normalized URL` entries for the same URL, indicating inefficiencies.
-    - **Issue**: Repeated `normalizeURL` calls in `buildSectionTree` and `collectSectionUrls` caused performance overhead.
-    - **Impact**: Slowed execution, though not critical.
-    - **Resolution**: Store pre-normalized URLs in `SectionNode`. Minimize redundant calls in recursive functions.
-    - **Action Taken**: Updated `collectSectionUrls` to use `node.url`.
+    - **Context**: Test logs (e.g., May 27, 2025, 1:39 AM AEST) showed multiple `Normalized URL` entries for the same URL in `buildSectionTree` and `collectSectionUrls`, indicating inefficiencies.
+    - **Issue**: Repeated calls to `normalizeURL` in `index.ts` and `list-sections.ts` caused unnecessary processing overhead, as URLs were normalized multiple times during tree construction and PDF generation.
+    - **Impact**: While not critical, the overhead slowed execution, particularly for large URL trees with many sub-links.
+    - **Resolution**: Store pre-normalized URLs in `SectionNode` objects to avoid redundant calls. Restructure `collectSectionUrls` to use `node.url` directly, minimizing normalization.
+    - **Action Taken**: Updated `collectSectionUrls` in `index.ts` to leverage pre-normalized URLs, improving performance.
 
 ### Planned Features (Steps 8–11)
-13. **Enable Customizable Selectors for Cross-Website Compatibility**
-    - **Date**: May 27, 2025
-    - **Context**: Hardcoded selectors limit reusability across websites with different DOM structures.
-    - **Issue**: Non-Apple documentation sites require flexible selectors.
-    - **Impact**: Restricts tool applicability beyond developer.apple.com.
-    - **Resolution**: Implement `--content-div` and `--nav-div` CLI arguments with defaults (`div.router-content div.content`, `.card-body .vue-recycle-scroller__item-view a.leaf-link`).
-    - **Action Taken**: Added argument parsing in `index.ts` for Step 8.
-
-14. **Filter Irrelevant URLs to Enhance Efficiency**
+12. **Enable Customizable Selectors for Broader Website Compatibility**
     - **Date**: Planned
-    - **Context**: Crawling irrelevant pages (e.g., external links) increases runtime and PDF size.
-    - **Issue**: Unfiltered URLs risk throttling and bloat outputs.
-    - **Impact**: Slows execution and degrades output quality.
-    - **Resolution**: Add `--ignore` CLI argument for regex patterns (e.g., `/vzerror/.*,https://docs\.oasis-open\.org/.*`) to skip unwanted URLs.
-    - **Action Planned**: Implement filtering in `crawlLinks` and `buildSectionTree` for Step 9.
+    - **Context**: The tool’s hardcoded selectors (`div.router-content div.content`, `.card-body .vue-recycle-scroller__item-view a.leaf-link`) are tailored to developer.apple.com, limiting applicability to other websites with different DOM structures.
+    - **Issue**: Lack of customizable selectors restricts the tool’s reusability for non-Apple documentation sites.
+    - **Impact**: Reduces the tool’s versatility, requiring code changes for new websites.
+    - **Resolution**: Implement `--content-div` and `--nav-div` CLI arguments to allow user-defined selectors, defaulting to current values. Update `crawlLinks` and `getSectionLinks` to prioritize user-provided selectors.
+    - **Action Planned**: Add argument parsing in `index.ts` for Step 8, enhancing flexibility.
 
-15. **Maintain Accurate and Platform-Specific README Content**
+13. **Filter Irrelevant URLs to Enhance Crawling Efficiency**
     - **Date**: Planned
-    - **Context**: Updating `README.md` risks overwriting valid content or assuming untested platforms (e.g., Linux).
-    - **Issue**: Incorrect assumptions reduce portability and mislead users.
-    - **Impact**: Complicates setup for contributors.
-    - **Resolution**: Retain original README unless incorrect. Add macOS 15.4.1 setup with `brew` commands, mark Linux as untested, and document all CLI features.
-    - **Action Planned**: Update README for Step 10.
+    - **Context**: Crawling irrelevant or external pages (e.g., `https://docs.oasis-open.org`) increases runtime, PDF size, and risks server-side throttling.
+    - **Issue**: Without filtering, the tool processes unwanted URLs, bloating output and slowing execution.
+    - **Impact**: Degrades performance and output quality, particularly for large documentation sites.
+    - **Resolution**: Introduce a `--ignore` CLI argument for comma-separated regex patterns (e.g., `/vzerror/.*,https://docs\.oasis-open\.org/.*`) to skip unwanted URLs. Apply filtering in `crawlLinks` and `buildSectionTree`.
+    - **Action Planned**: Implement URL filtering in `index.ts` and `list-sections.ts` for Step 9.
 
-16. **Adapt for App Store Compliance with Non-CLI Dependencies**
+14. **Preserve README Content and Clarify Platform-Specific Dependencies**
     - **Date**: Planned
-    - **Context**: CLI dependencies (e.g., Puppeteer with Chrome) are incompatible with app store sandboxing and GUI requirements.
-    - **Issue**: Prevents iOS/Android distribution.
-    - **Impact**: Limits deployment to CLI environments.
-    - **Resolution**: Port to C# with .NET MAUI, using `HtmlAgilityPack` + `HttpClient` for crawling, WebView for dynamic content, and `PDFSharp` for PDFs. Implement GUI and server-side crawling.
-    - **Action Planned**: Plan port for Step 11.
+    - **Context**: Updating `README.md` risks overwriting valid content or making untested assumptions about platforms like Linux, which haven’t been validated.
+    - **Issue**: Incorrect or unverified setup instructions could mislead users, particularly for non-macOS environments.
+    - **Impact**: Reduces portability and user trust in the tool’s documentation.
+    - **Resolution**: Retain original README content unless factually incorrect. Add detailed macOS 15.4.1 setup instructions using Homebrew (e.g., `brew install node`, `brew install --cask google-chrome`). Include Linux dependencies as untested, clearly marked. Document all CLI arguments and setup steps.
+    - **Action Planned**: Revise README for Step 10, ensuring clarity and platform specificity.
+
+15. **Adapt Tool for App Store Distribution with Non-CLI Dependencies**
+    - **Date**: Planned
+    - **Context**: The current Node.js implementation relies on CLI dependencies (e.g., Puppeteer with Chrome), which are incompatible with iOS, iPadOS, Android, macOS, and Windows app store sandboxing and GUI requirements.
+    - **Issue**: Puppeteer’s Chrome dependency and CLI nature prevent app store distribution, limiting deployment options.
+    - **Impact**: Restricts the tool to command-line use, excluding mobile and desktop app markets.
+    - **Resolution**: Port the tool to C# using .NET MAUI for cross-platform GUI support. Replace Puppeteer with `HtmlAgilityPack` + `HttpClient` for static HTML crawling and WebView (`WKWebView`, `WebView`, `WebView2`) for dynamic content. Use `PDFSharp` (MIT license) for PDF generation. Implement a server-side crawling component to comply with mobile sandboxing. Ensure app store compliance with privacy manifests and native UI.
+    - **Action Planned**: Design and prototype C# port for Step 11, focusing on app store requirements.
 
 ## Notes
-- **Environment**: Lessons are derived from macOS 15.4.1 Sequoia, Node.js 20, TypeScript, AEST timezone (UTC+10).
-- **Contribution**: Include this file in the repository with `README.md`, `LICENSE` (MIT), and `.gitignore` (`node_modules`, `dist/`, `out/`).
-- **Testing**: Run `npm run build` after source changes to update `dist/`. Share logs, PDF counts, and page content for debugging.
-- **Dependency Licenses**: Node.js dependencies (`puppeteer`: Apache-2.0, `pdf-lib`: MIT, `p-limit`: MIT, `chrome-finder`: MIT, `typescript`: Apache-2.0) and C# dependencies (`HtmlAgilityPack`: MIT, `PDFSharp`: MIT) are permissive, requiring license notices for app store compliance.
+- **Environment**: All lessons are based on development and testing on macOS 15.4.1 Sequoia, using Node.js 20, TypeScript, and AEST timezone (UTC+10).
+- **Contribution Guidelines**: Maintain this file in the repository alongside `README.md`, `LICENSE` (MIT), and `.gitignore` (excluding `node_modules`, `dist/`, `out/`). Contributors should follow TypeScript style guidelines, run `npm run build` before testing, and include detailed test logs with PDF counts.
+- **Testing Workflow**: Always run `npm run build` after modifying source files to update `dist/`. Share test logs, PDF counts, and any observed duplicates or errors to facilitate debugging.
+- **Dependency Licenses**: Current dependencies (`puppeteer`: Apache-2.0, `pdf-lib`: MIT, `p-limit`: MIT, `chrome-finder`: MIT, `typescript`: Apache-2.0) are permissive and app store-compatible, requiring license notices. Planned C# dependencies (`HtmlAgilityPack`: MIT, `PDFSharp`: MIT) align with these requirements.

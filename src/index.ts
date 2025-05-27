@@ -24,7 +24,7 @@ Arguments:
 }
 
 function logWithTimestamp(message: string): void {
-    console.log(`[${new Date().toISOString()}] ${message}`);
+    console.log(`[${new Date().toLocaleString('en-AU', { timeZone: 'Australia/Sydney', hour12: false })}] ${message}`);
 }
 
 // Escape special regex characters
@@ -145,7 +145,7 @@ async function crawlLinks(
                 }
             }
             const allLinks = links.map((link) => link.href);
-            console.log(`[${new Date().toISOString()}] Raw links found: ${allLinks.length}`, allLinks);
+            console.log(`[${new Date().toLocaleString('en-AU', { timeZone: 'Australia/Sydney', hour12: false })}] Raw links found: ${allLinks.length}`, allLinks);
             return allLinks.filter((href) => pattern.test(href));
         }, urlPattern.source, contentDiv, navDiv);
 
@@ -217,14 +217,19 @@ async function generateSinglePDF(
     }
 }
 
-function collectSectionUrls(node: SectionNode, excludeTopLevel: Set<string>, urls: Set<string> = new Set()): string[] {
-    if (!excludeTopLevel.has(node.url)) {
-        urls.add(node.url);
+function collectSectionUrls(node: SectionNode, excludeTopLevel: Set<string>, depth: number, sectionUrls: Map<string, string[]> = new Map()): Map<string, string[]> {
+    const normalizedUrl = node.url;
+    const sectionKey = depth <= 1 ? normalizedUrl : node.url.split('/').slice(0, -1).join('/'); // Group by parent section for depth > 1
+    if (!sectionUrls.has(sectionKey)) {
+        sectionUrls.set(sectionKey, []);
+    }
+    if (!excludeTopLevel.has(normalizedUrl)) {
+        sectionUrls.get(sectionKey)!.push(normalizedUrl);
     }
     for (const child of node.children) {
-        collectSectionUrls(child, excludeTopLevel, urls);
+        collectSectionUrls(child, excludeTopLevel, depth + 1, sectionUrls);
     }
-    return [...urls].sort((a, b) => a.localeCompare(b));
+    return sectionUrls;
 }
 
 export async function generatePDF(
@@ -246,32 +251,35 @@ export async function generatePDF(
             mkdirSync(outputDir, { recursive: true });
         }
 
-        const generateNodePDF = async (node: SectionNode, globalVisited: Set<string>) => {
-            const normalizedUrl = node.url; // Already normalized by buildSectionTree
-            if (globalVisited.has(normalizedUrl)) {
-                logWithTimestamp(`Skipping PDF for ${normalizedUrl} (already processed)`);
-                return;
-            }
-            globalVisited.add(normalizedUrl);
+        const globalProcessedUrls = new Set<string>(); // Track URLs across all PDFs
 
-            // Collect all URLs for this section, excluding top-level URLs of subsections
+        const generateNodePDF = async (node: SectionNode, depth: number) => {
+            const normalizedUrl = node.url;
+            const sectionKey = depth <= 1 ? normalizedUrl : node.url.split('/').slice(0, -1).join('/');
+            if (depth > 1) {
+                return; // Only generate PDFs for depth 0 (main) and 1 (sections)
+            }
+
+            // Collect URLs for this section
             const excludeTopLevel = new Set(node.children.map(child => child.url));
-            const sectionUrls = collectSectionUrls(node, excludeTopLevel);
+            const sectionUrlsMap = collectSectionUrls(sectionTree, excludeTopLevel, 0);
+            const sectionUrls = sectionUrlsMap.get(sectionKey) || [];
             if (sectionUrls.length === 0) {
-                logWithTimestamp(`No URLs to process for ${normalizedUrl}`);
+                logWithTimestamp(`No URLs to process for ${sectionKey}`);
                 return;
             }
-            logWithTimestamp(`Processing URLs for ${normalizedUrl}: ${JSON.stringify(sectionUrls)}`);
+            logWithTimestamp(`Processing URLs for ${sectionKey} (depth ${depth}): ${JSON.stringify(sectionUrls)}`);
 
             const pdfDoc = await PDFDocument.create();
             const processedUrls = new Set<string>();
 
-            for (const sectionUrl of sectionUrls) {
-                if (processedUrls.has(sectionUrl)) {
+            for (const sectionUrl of sectionUrls.sort((a, b) => a.localeCompare(b))) {
+                if (processedUrls.has(sectionUrl) || globalProcessedUrls.has(sectionUrl)) {
                     logWithTimestamp(`Skipping duplicate URL ${sectionUrl} within PDF`);
                     continue;
                 }
                 processedUrls.add(sectionUrl);
+                globalProcessedUrls.add(sectionUrl);
 
                 const pdfBuffer = await generateSinglePDF(ctx, sectionUrl, contentDiv);
                 if (pdfBuffer.length > 0) {
@@ -288,22 +296,22 @@ export async function generatePDF(
 
             const finalPageCount = pdfDoc.getPageCount();
             if (finalPageCount > 0) {
-                const slug = generateSlug(normalizedUrl);
+                const slug = generateSlug(sectionKey);
                 const outputPath = join(outputDir, `${slug}.pdf`);
                 const pdfBytes = await pdfDoc.save();
                 writeFileSync(outputPath, new Uint8Array(pdfBytes));
                 logWithTimestamp(`PDF saved to ${outputPath} with ${finalPageCount} pages`);
             } else {
-                logWithTimestamp(`No pages generated for ${normalizedUrl}`);
+                logWithTimestamp(`No pages generated for ${sectionKey}`);
             }
 
             for (const child of node.children) {
-                await generateNodePDF(child, globalVisited);
+                await generateNodePDF(child, depth + 1);
             }
         };
 
         logWithTimestamp(`Starting PDF generation for section tree`);
-        await generateNodePDF(sectionTree, new Set());
+        await generateNodePDF(sectionTree, 0);
         logWithTimestamp(`Completed PDF generation for section tree`);
         return Buffer.from([]); // Return empty buffer as PDFs are saved separately
     } else {

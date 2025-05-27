@@ -15,7 +15,7 @@ Arguments:
 }
 
 function logWithTimestamp(message: string): void {
-    console.log(`[${new Date().toISOString()}] ${message}`);
+    console.log(`[${new Date().toLocaleString('en-AU', { timeZone: 'Australia/Sydney', hour12: false })}] ${message}`);
 }
 
 function generateSlug(url: string): string {
@@ -155,9 +155,14 @@ export async function buildSectionTree(page: Page, url: string, urlPattern: RegE
     logWithTimestamp(`Pattern test for ${normalizedUrl}: ${urlPattern.test(normalizedUrl)} (pattern: ${urlPattern.source})`);
     visited.add(normalizedUrl);
 
-    const childUrls = [...new Set(await getSectionLinks(page, normalizedUrl, urlPattern))];
-    const children: SectionNode[] = [];
+    let childUrls: string[] = [];
+    if (depth <= 1) { // Only scrape links for depth 0 and 1
+        childUrls = [...new Set(await getSectionLinks(page, normalizedUrl, urlPattern))];
+    } else {
+        logWithTimestamp(`Skipping link scraping for leaf node at depth ${depth}: ${normalizedUrl}`);
+    }
 
+    const children: SectionNode[] = [];
     for (const childUrl of childUrls) {
         const childNode = await buildSectionTree(page, childUrl, urlPattern, visited, depth + 1);
         if (childNode.children.length > 0 || urlPattern.test(childNode.url)) {
@@ -177,7 +182,7 @@ async function main() {
         throw new Error("<base_url> is required");
     }
 
-    logWithTimestamp("list-sections.js version: 2025-05-27T12:34:00+10:00 (with flexible selectors and deduplication)");
+    logWithTimestamp("list-sections.js version: 2025-05-27T17:26:00+10:00 (with flexible selectors and deduplication)");
     let ctx;
     try {
         ctx = await useBrowserContext();
