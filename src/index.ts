@@ -220,16 +220,19 @@ async function generateSinglePDF(
 function collectSectionUrls(node: SectionNode, sectionGroups: Map<string, string[]> = new Map()): Map<string, string[]> {
     const normalizedUrl = node.url;
     const pathSegments = normalizedUrl.split('/').filter(segment => segment);
-    const isEnum = normalizedUrl.includes('state-swift.enum');
+    const isEnum = normalizedUrl.includes('state-swift.enum') && !normalizedUrl.includes('state-swift.enum/');
+    const isEnumChild = normalizedUrl.includes('state-swift.enum/');
     const isDevice = ['consoledevices', 'memoryballoondevices', 'networkdevices', 'socketdevices', 'directorysharingdevices', 'usbcontrollers', 'graphicsdevices'].some(device => normalizedUrl.endsWith(device));
     const isProperty = ['state-swift.property', 'canstart', 'canpause', 'canresume', 'canstop', 'canrequeststop'].some(prop => normalizedUrl.endsWith(prop));
     const isMethod = ['start', 'stop', 'pause', 'resume', 'requeststop', 'savemachinestateto', 'restoremachinestatefrom'].some(method => pathSegments[pathSegments.length - 1].startsWith(method));
     const isMain = pathSegments[pathSegments.length - 1] === 'vzvirtualmachine';
 
-    let groupKey: string;
+    let groupKey: string | null = null;
     if (isMain) {
         groupKey = 'main';
     } else if (isEnum) {
+        groupKey = 'enums';
+    } else if (isEnumChild) {
         groupKey = 'enums';
     } else if (isDevice) {
         groupKey = 'devices';
@@ -237,21 +240,19 @@ function collectSectionUrls(node: SectionNode, sectionGroups: Map<string, string
         groupKey = 'properties';
     } else if (isMethod) {
         groupKey = 'methods';
-    } else {
-        groupKey = 'other'; // Fallback, should be rare
+    } else if (['delegate', 'init(configuration:)', 'init(configuration:queue:)', 'issupported'].some(prop => normalizedUrl.endsWith(prop))) {
+        groupKey = 'other';
     }
 
-    if (!sectionGroups.has(groupKey)) {
-        sectionGroups.set(groupKey, []);
+    if (groupKey) {
+        if (!sectionGroups.has(groupKey)) {
+            sectionGroups.set(groupKey, []);
+        }
+        sectionGroups.get(groupKey)!.push(normalizedUrl);
+        logWithTimestamp(`Assigned URL ${normalizedUrl} to group ${groupKey}`);
     }
-    sectionGroups.get(groupKey)!.push(normalizedUrl);
 
     for (const child of node.children) {
-        // Recursively collect child URLs, assigning them to the same group as their parent
-        const childPathSegments = child.url.split('/').filter(segment => segment);
-        if (childPathSegments.length > pathSegments.length) {
-            sectionGroups.get(groupKey)!.push(child.url);
-        }
         collectSectionUrls(child, sectionGroups);
     }
 
@@ -277,7 +278,6 @@ export async function generatePDF(
             mkdirSync(outputDir, { recursive: true });
         }
 
-        const globalProcessedUrls = new Set<string>(); // Track URLs across all PDFs
         const sectionGroups = collectSectionUrls(sectionTree);
         const groupNames: Record<string, string> = {
             'main': 'vzvirtualmachine',
@@ -290,18 +290,18 @@ export async function generatePDF(
 
         for (const [groupKey, urls] of sectionGroups) {
             const groupName = groupNames[groupKey] || groupKey;
-            logWithTimestamp(`Processing URLs for group ${groupName}: ${JSON.stringify(urls)}`);
+            const uniqueUrls = [...new Set(urls)].sort((a, b) => a.localeCompare(b));
+            logWithTimestamp(`Processing URLs for group ${groupName}: ${JSON.stringify(uniqueUrls)}`);
 
             const pdfDoc = await PDFDocument.create();
-            const processedUrls = new Set<string>();
+            const processedUrls = new Set<string>(); // Track URLs within this group
 
-            for (const sectionUrl of urls.sort((a, b) => a.localeCompare(b))) {
-                if (processedUrls.has(sectionUrl) || globalProcessedUrls.has(sectionUrl)) {
+            for (const sectionUrl of uniqueUrls) {
+                if (processedUrls.has(sectionUrl)) {
                     logWithTimestamp(`Skipping duplicate URL ${sectionUrl} in group ${groupName}`);
                     continue;
                 }
                 processedUrls.add(sectionUrl);
-                globalProcessedUrls.add(sectionUrl);
 
                 const pdfBuffer = await generateSinglePDF(ctx, sectionUrl, contentDiv);
                 if (pdfBuffer.length > 0) {
