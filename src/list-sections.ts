@@ -73,7 +73,7 @@ export interface SectionNode {
     children: SectionNode[];
 }
 
-async function getSectionLinks(page: Page, url: string): Promise<string[]> {
+async function getSectionLinks(page: Page, url: string, urlPattern: RegExp): Promise<string[]> {
     logWithTimestamp(`Scraping sections from: ${url}`);
     try {
         const response = await page.goto(url, { waitUntil: 'networkidle0', timeout: 30000 });
@@ -117,7 +117,8 @@ async function getSectionLinks(page: Page, url: string): Promise<string[]> {
         });
         await delay(15000);
 
-        const sectionLinks = await page.evaluate((baseUrl: string, contentSelector: string, navSelector: string) => {
+        const sectionLinks = await page.evaluate((baseUrl: string, contentSelector: string, navSelector: string, patternString: string) => {
+            const pattern = new RegExp(patternString);
             let links: HTMLAnchorElement[] = [];
             const contentLinks = document.querySelectorAll(`${contentSelector} .link-block.topic a, ${contentSelector} a.inline-link`) as NodeListOf<HTMLAnchorElement>;
             if (contentLinks.length > 0) {
@@ -130,11 +131,11 @@ async function getSectionLinks(page: Page, url: string): Promise<string[]> {
                     links = Array.from(document.querySelectorAll(`body a[href^="${baseUrl}"]`)) as HTMLAnchorElement[];
                 }
             }
-            return links.map((link) => link.href);
-        }, url, contentDiv, navDiv);
+            return links.map((link) => link.href).filter(href => pattern.test(href));
+        }, url, contentDiv, navDiv, urlPattern.source);
 
         const normalizedLinks = [...new Set(sectionLinks.map(normalizeURL))].filter(link => 
-            link.startsWith(url) && !link.includes('#')
+            link.startsWith(url) && !link.includes('#') && urlPattern.test(link)
         );
         logWithTimestamp(`Found section links: ${JSON.stringify(normalizedLinks)}`);
         return normalizedLinks;
@@ -144,20 +145,26 @@ async function getSectionLinks(page: Page, url: string): Promise<string[]> {
     }
 }
 
-export async function buildSectionTree(page: Page, url: string, visited: Set<string> = new Set(), depth: number = 0): Promise<SectionNode> {
+export async function buildSectionTree(page: Page, url: string, urlPattern: RegExp, visited: Set<string> = new Set(), depth: number = 0): Promise<SectionNode> {
     const normalizedUrl = normalizeURL(url);
     if (visited.has(normalizedUrl)) {
         logWithTimestamp(`Skipping already visited URL in tree: ${normalizedUrl}`);
         return { url: normalizedUrl, children: [] };
     }
+    if (!urlPattern.test(normalizedUrl)) {
+        logWithTimestamp(`Skipping URL outside pattern: ${normalizedUrl}`);
+        return { url: normalizedUrl, children: [] };
+    }
     visited.add(normalizedUrl);
 
-    const childUrls = [...new Set(await getSectionLinks(page, url))]; // Deduplicate child URLs
+    const childUrls = [...new Set(await getSectionLinks(page, url, urlPattern))];
     const children: SectionNode[] = [];
 
     for (const childUrl of childUrls) {
-        const childNode = await buildSectionTree(page, childUrl, visited, depth + 1);
-        children.push(childNode);
+        const childNode = await buildSectionTree(page, childUrl, urlPattern, visited, depth + 1);
+        if (childNode.children.length > 0 || urlPattern.test(childNode.url)) {
+            children.push(childNode);
+        }
     }
 
     logWithTimestamp(`Built tree node for ${url} with ${children.length} children at depth ${depth}`);
@@ -172,14 +179,15 @@ async function main() {
         throw new Error("<base_url> is required");
     }
 
-    logWithTimestamp("list-sections.js version: 2025-05-22T19:00:00+10:00 (with flexible selectors and deduplication)");
+    logWithTimestamp("list-sections.js version: 2025-05-27T11:32:00+10:00 (with flexible selectors and deduplication)");
     let ctx;
     try {
         ctx = await useBrowserContext();
-        const sectionTree = await buildSectionTree(ctx.page, baseURL);
+        const urlPattern = new RegExp(`^${baseURL}.*`);
+        const sectionTree = await buildSectionTree(ctx.page, baseURL, urlPattern);
         logWithTimestamp(`Section tree: ${JSON.stringify(sectionTree, null, 2)}`);
 
-        const sectionLinks = await getSectionLinks(ctx.page, baseURL);
+        const sectionLinks = await getSectionLinks(ctx.page, baseURL, urlPattern);
         const commands = sectionLinks.map(link => 
             `node bin/index.js "${link}/" "${link}/.*"`
         );

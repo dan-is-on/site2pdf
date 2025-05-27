@@ -82,7 +82,7 @@ async function crawlLinks(
             } catch (error) {
                 errorDetails = error instanceof Error ? error.message : String(error);
                 logWithTimestamp(`Attempt ${attempt}/5: Failed to load ${url}, retrying... (${errorDetails})`);
-                await delay(1000 * Math.pow(2, attempt - 1));
+                await delay(1000 * Math.pow(2, attempt));
             }
         }
 
@@ -181,7 +181,7 @@ async function generateSinglePDF(
             } catch (error) {
                 errorDetails = error instanceof Error ? error.message : String(error);
                 logWithTimestamp(`Attempt ${attempt}/5: Failed to load ${url} for PDF, retrying... (${errorDetails})`);
-                await delay(1000 * Math.pow(2, attempt - 1));
+                await delay(1000 * Math.pow(2, attempt));
             }
         }
 
@@ -212,15 +212,15 @@ async function generateSinglePDF(
     }
 }
 
-function collectSectionUrls(node: SectionNode, excludeTopLevel: Set<string>, urls: string[] = []): string[] {
+function collectSectionUrls(node: SectionNode, excludeTopLevel: Set<string>, urls: Set<string> = new Set()): string[] {
     const normalizedUrl = normalizeURL(node.url);
     if (!excludeTopLevel.has(normalizedUrl)) {
-        urls.push(normalizedUrl);
+        urls.add(normalizedUrl);
     }
     for (const child of node.children) {
         collectSectionUrls(child, excludeTopLevel, urls);
     }
-    return urls;
+    return [...urls].sort((a, b) => a.localeCompare(b));
 }
 
 export async function generatePDF(
@@ -236,7 +236,7 @@ export async function generatePDF(
     const visited = new Set<string>();
     
     if (splitSections) {
-        const sectionTree = await buildSectionTree(ctx.page, url);
+        const sectionTree = await buildSectionTree(ctx.page, url, urlPattern);
         const outputDir = join(process.cwd(), "out");
         if (!existsSync(outputDir)) {
             mkdirSync(outputDir, { recursive: true });
@@ -252,7 +252,7 @@ export async function generatePDF(
 
             // Collect all URLs for this section, excluding top-level URLs of subsections
             const excludeTopLevel = new Set(node.children.map(child => normalizeURL(child.url)));
-            const sectionUrls = collectSectionUrls(node, excludeTopLevel).sort((a, b) => a.localeCompare(b));
+            const sectionUrls = collectSectionUrls(node, excludeTopLevel);
             if (sectionUrls.length === 0) {
                 logWithTimestamp(`No URLs to process for ${normalizedUrl}`);
                 return;
