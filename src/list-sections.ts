@@ -151,13 +151,11 @@ export async function buildSectionTree(page: Page, url: string, urlPattern: RegE
         logWithTimestamp(`Skipping already visited URL in tree: ${normalizedUrl}`);
         return { url: normalizedUrl, children: [] };
     }
-    if (!urlPattern.test(normalizedUrl)) {
-        logWithTimestamp(`Skipping URL outside pattern: ${normalizedUrl}`);
-        return { url: normalizedUrl, children: [] };
-    }
+
+    logWithTimestamp(`Pattern test for ${normalizedUrl}: ${urlPattern.test(normalizedUrl)} (pattern: ${urlPattern.source})`);
     visited.add(normalizedUrl);
 
-    const childUrls = [...new Set(await getSectionLinks(page, url, urlPattern))];
+    const childUrls = [...new Set(await getSectionLinks(page, normalizedUrl, urlPattern))];
     const children: SectionNode[] = [];
 
     for (const childUrl of childUrls) {
@@ -167,7 +165,7 @@ export async function buildSectionTree(page: Page, url: string, urlPattern: RegE
         }
     }
 
-    logWithTimestamp(`Built tree node for ${url} with ${children.length} children at depth ${depth}`);
+    logWithTimestamp(`Built tree node for ${normalizedUrl} with ${children.length} children at depth ${depth}`);
     return { url: normalizedUrl, children };
 }
 
@@ -179,11 +177,12 @@ async function main() {
         throw new Error("<base_url> is required");
     }
 
-    logWithTimestamp("list-sections.js version: 2025-05-27T11:32:00+10:00 (with flexible selectors and deduplication)");
+    logWithTimestamp("list-sections.js version: 2025-05-27T12:34:00+10:00 (with flexible selectors and deduplication)");
     let ctx;
     try {
         ctx = await useBrowserContext();
-        const urlPattern = new RegExp(`^${baseURL}.*`);
+        const urlPattern = new RegExp(`^${baseURL.replace(/\/+$/, '')}.*`);
+        logWithTimestamp(`Using urlPattern: ${urlPattern.source}`);
         const sectionTree = await buildSectionTree(ctx.page, baseURL, urlPattern);
         logWithTimestamp(`Section tree: ${JSON.stringify(sectionTree, null, 2)}`);
 

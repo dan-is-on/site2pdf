@@ -27,6 +27,11 @@ function logWithTimestamp(message: string): void {
     console.log(`[${new Date().toISOString()}] ${message}`);
 }
 
+// Escape special regex characters
+function escapeRegExp(str: string): string {
+    return str.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+
 type BrowserContext = {
     browser: Browser,
     page: Page,
@@ -213,9 +218,8 @@ async function generateSinglePDF(
 }
 
 function collectSectionUrls(node: SectionNode, excludeTopLevel: Set<string>, urls: Set<string> = new Set()): string[] {
-    const normalizedUrl = normalizeURL(node.url);
-    if (!excludeTopLevel.has(normalizedUrl)) {
-        urls.add(normalizedUrl);
+    if (!excludeTopLevel.has(node.url)) {
+        urls.add(node.url);
     }
     for (const child of node.children) {
         collectSectionUrls(child, excludeTopLevel, urls);
@@ -243,7 +247,7 @@ export async function generatePDF(
         }
 
         const generateNodePDF = async (node: SectionNode, globalVisited: Set<string>) => {
-            const normalizedUrl = normalizeURL(node.url);
+            const normalizedUrl = node.url; // Already normalized by buildSectionTree
             if (globalVisited.has(normalizedUrl)) {
                 logWithTimestamp(`Skipping PDF for ${normalizedUrl} (already processed)`);
                 return;
@@ -251,7 +255,7 @@ export async function generatePDF(
             globalVisited.add(normalizedUrl);
 
             // Collect all URLs for this section, excluding top-level URLs of subsections
-            const excludeTopLevel = new Set(node.children.map(child => normalizeURL(child.url)));
+            const excludeTopLevel = new Set(node.children.map(child => child.url));
             const sectionUrls = collectSectionUrls(node, excludeTopLevel);
             if (sectionUrls.length === 0) {
                 logWithTimestamp(`No URLs to process for ${normalizedUrl}`);
@@ -298,7 +302,9 @@ export async function generatePDF(
             }
         };
 
+        logWithTimestamp(`Starting PDF generation for section tree`);
         await generateNodePDF(sectionTree, new Set());
+        logWithTimestamp(`Completed PDF generation for section tree`);
         return Buffer.from([]); // Return empty buffer as PDFs are saved separately
     } else {
         const allLinks = await crawlLinks(ctx.page, url, urlPattern, visited, concurrentLimit, contentDiv, navDiv);
@@ -366,8 +372,16 @@ export function generateSlug(url: string): string {
 
 export async function main() {
     const args = process.argv.slice(2);
-    const mainURL = args[0];
-    const urlPattern = args[1] && !args[1].startsWith('--') ? new RegExp(args[1]) : new RegExp(`^${mainURL}`);
+    const mainURL = normalizeURL(args[0]);
+    let urlPattern: RegExp;
+    try {
+        const urlPatternStr = args[1] && !args[1].startsWith('--') ? args[1] : `^${escapeRegExp(mainURL)}.*`;
+        urlPattern = new RegExp(urlPatternStr);
+        logWithTimestamp(`Constructed urlPattern: ${urlPattern.source}`);
+    } catch (error) {
+        logWithTimestamp(`Error constructing urlPattern: ${error}`);
+        throw new Error(`Invalid urlPattern: ${error}`);
+    }
     const contentDiv = args.includes('--content-div') ? args[args.indexOf('--content-div') + 1] : 'div.router-content div.content';
     const navDiv = args.includes('--nav-div') ? args[args.indexOf('--nav-div') + 1] : '.card-body .vue-recycle-scroller__item-view a.leaf-link';
     const splitSections = args.includes('--split-sections');
@@ -396,6 +410,7 @@ export async function main() {
         }
     } catch (error) {
         logWithTimestamp(`Error generating PDF: ${error}`);
+        throw error;
     } finally {
         await ctx?.browser.close();
     }
