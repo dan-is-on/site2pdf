@@ -152,20 +152,23 @@ export async function buildSectionTree(page: Page, url: string, urlPattern: RegE
         return { url: normalizedUrl, children: [] };
     }
 
-    logWithTimestamp(`Pattern test for ${normalizedUrl}: ${urlPattern.test(normalizedUrl)} (pattern: ${urlPattern.source})`);
+    // Normalize pattern to ensure main URL matches
+    const patternSource = urlPattern.source.replace(/\/+$/, '').replace(/\.\*/, '.*');
+    const normalizedPattern = new RegExp(patternSource);
+    logWithTimestamp(`Pattern test for ${normalizedUrl}: ${normalizedPattern.test(normalizedUrl)} (pattern: ${normalizedPattern.source})`);
     visited.add(normalizedUrl);
 
     let childUrls: string[] = [];
     if (depth <= 1) { // Only scrape links for depth 0 and 1
-        childUrls = [...new Set(await getSectionLinks(page, normalizedUrl, urlPattern))];
+        childUrls = [...new Set(await getSectionLinks(page, normalizedUrl, normalizedPattern))];
     } else {
         logWithTimestamp(`Skipping link scraping for leaf node at depth ${depth}: ${normalizedUrl}`);
     }
 
     const children: SectionNode[] = [];
     for (const childUrl of childUrls) {
-        const childNode = await buildSectionTree(page, childUrl, urlPattern, visited, depth + 1);
-        if (childNode.children.length > 0 || urlPattern.test(childNode.url)) {
+        const childNode = await buildSectionTree(page, childUrl, normalizedPattern, visited, depth + 1);
+        if (childNode.children.length > 0 || normalizedPattern.test(childNode.url)) {
             children.push(childNode);
         }
     }
@@ -182,7 +185,7 @@ async function main() {
         throw new Error("<base_url> is required");
     }
 
-    logWithTimestamp("list-sections.js version: 2025-05-27T17:26:00+10:00 (with flexible selectors and deduplication)");
+    logWithTimestamp("list-sections.js version: 2025-05-27T19:28:00+10:00 (with flexible selectors, deduplication, and pattern fix)");
     let ctx;
     try {
         ctx = await useBrowserContext();
