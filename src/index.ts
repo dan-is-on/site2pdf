@@ -19,7 +19,7 @@ Arguments:
   url_pattern      (Optional) Regular expression pattern to match sub-links (default: ^main_url)
   --content-div    (Optional) CSS selector for main content (default: div.router-content div.content)
   --nav-div        (Optional) CSS selector for navigation (default: .card-body .vue-recycle-scroller__item-view a.leaf-link)
-  --split-sections (Optional) Generate separate PDFs for main page and semantic section groups
+  --split-sections (Optional) Generate separate PDFs for each section
 `);
 }
 
@@ -115,11 +115,12 @@ async function crawlLinks(
                 await page.waitForSelector(navDiv, { timeout: 5000 });
                 selectorFound = true;
             } catch (error) {
-                const domStructure = await page.evaluate(() => {
+                const domStructure = await page.evaluate((patternString) => {
+                    const pattern = new RegExp(patternString);
                     const classes = Array.from(document.querySelectorAll('div')).map(div => div.className).filter(cls => cls);
-                    const bodyLinks = Array.from(document.querySelectorAll('body a[href^="/documentation/virtualization"]')).map(a => a.getAttribute('href'));
+                    const bodyLinks = Array.from(document.querySelectorAll('body a')).map(a => a.getAttribute('href')).filter(href => href && pattern.test(href));
                     return `Main div classes: ${JSON.stringify(classes, null, 2)}\nBody links found: ${bodyLinks.length} ${JSON.stringify(bodyLinks.slice(0, 5))}`;
-                });
+                }, urlPattern.source);
                 logWithTimestamp(`Failed to find ${contentDiv} or ${navDiv} after retries. ${domStructure}`);
                 await page.waitForSelector('body', { timeout: 10000 });
             }
@@ -141,7 +142,10 @@ async function crawlLinks(
                 if (navLinks.length > 0) {
                     links = Array.from(navLinks);
                 } else {
-                    links = Array.from(document.querySelectorAll('body a[href^="/documentation/virtualization"]')) as HTMLAnchorElement[];
+                    links = Array.from(document.querySelectorAll('body a')).filter(a => {
+                        const href = a.getAttribute('href');
+                        return href && pattern.test(href);
+                    }) as HTMLAnchorElement[];
                 }
             }
             const allLinks = links.map((link) => link.href);
@@ -217,46 +221,30 @@ async function generateSinglePDF(
     }
 }
 
-function collectSectionUrls(node: SectionNode, sectionGroups: Map<string, string[]> = new Map()): Map<string, string[]> {
-    const normalizedUrl = node.url;
-    const pathSegments = normalizedUrl.split('/').filter(segment => segment);
-    const isEnum = normalizedUrl.includes('state-swift.enum') && !normalizedUrl.includes('state-swift.enum/');
-    const isEnumChild = normalizedUrl.includes('state-swift.enum/');
-    const isDevice = ['consoledevices', 'memoryballoondevices', 'networkdevices', 'socketdevices', 'directorysharingdevices', 'usbcontrollers', 'graphicsdevices'].some(device => normalizedUrl.endsWith(device));
-    const isProperty = ['state-swift.property', 'canstart', 'canpause', 'canresume', 'canstop', 'canrequeststop'].some(prop => normalizedUrl.endsWith(prop));
-    const isMethod = ['start', 'stop', 'pause', 'resume', 'requeststop', 'savemachinestateto', 'restoremachinestatefrom'].some(method => pathSegments[pathSegments.length - 1].startsWith(method));
-    const isMain = pathSegments[pathSegments.length - 1] === 'vzvirtualmachine';
+function splitSectionTrees(node: SectionNode, sections: SectionNode[] = [], parentUrl: string | null = null): SectionNode[] {
+    const isSection = node.children.length > 0;
+    const normalizedUrl = normalizeURL(node.url);
+    let sectionNode: SectionNode = { url: normalizedUrl, children: [] };
 
-    let groupKey: string | null = null;
-    if (isMain) {
-        groupKey = 'main';
-    } else if (isEnum) {
-        groupKey = 'enums';
-    } else if (isEnumChild) {
-        groupKey = 'enums';
-    } else if (isDevice) {
-        groupKey = 'devices';
-    } else if (isProperty) {
-        groupKey = 'properties';
-    } else if (isMethod) {
-        groupKey = 'methods';
-    } else if (['delegate', 'init(configuration:)', 'init(configuration:queue:)', 'issupported'].some(prop => normalizedUrl.endsWith(prop))) {
-        groupKey = 'other';
-    }
-
-    if (groupKey) {
-        if (!sectionGroups.has(groupKey)) {
-            sectionGroups.set(groupKey, []);
+    if (isSection) {
+        // Collect immediate children that are not sections themselves
+        for (const child of node.children) {
+            if (child.children.length === 0) {
+                sectionNode.children.push({ url: normalizeURL(child.url), children: [] });
+            }
         }
-        sectionGroups.get(groupKey)!.push(normalizedUrl);
-        logWithTimestamp(`Assigned URL ${normalizedUrl} to group ${groupKey}`);
+        sections.push(sectionNode);
+        logWithTimestamp(`Identified section: ${normalizedUrl} with ${sectionNode.children.length} immediate children`);
     }
 
+    // Recursively process children that are sections
     for (const child of node.children) {
-        collectSectionUrls(child, sectionGroups);
+        if (child.children.length > 0) {
+            splitSectionTrees(child, sections, normalizedUrl);
+        }
     }
 
-    return sectionGroups;
+    return sections;
 }
 
 export async function generatePDF(
@@ -278,27 +266,21 @@ export async function generatePDF(
             mkdirSync(outputDir, { recursive: true });
         }
 
-        const sectionGroups = collectSectionUrls(sectionTree);
-        const groupNames: Record<string, string> = {
-            'main': 'vzvirtualmachine',
-            'methods': 'methods',
-            'properties': 'properties',
-            'enums': 'state-swift-enum',
-            'devices': 'devices',
-            'other': 'other'
-        };
+        const sectionTrees = splitSectionTrees(sectionTree);
+        logWithTimestamp(`Split into ${sectionTrees.length} section trees`);
 
-        for (const [groupKey, urls] of sectionGroups) {
-            const groupName = groupNames[groupKey] || groupKey;
-            const uniqueUrls = [...new Set(urls)].sort((a, b) => a.localeCompare(b));
-            logWithTimestamp(`Processing URLs for group ${groupName}: ${JSON.stringify(uniqueUrls)}`);
+        for (const section of sectionTrees) {
+            const rootUrl = section.url;
+            const urls = [rootUrl, ...section.children.map(child => child.url)].sort((a, b) => a.localeCompare(b));
+            const sectionSlug = generateSlug(rootUrl);
+            logWithTimestamp(`Processing section ${sectionSlug}: ${JSON.stringify(urls)}`);
 
             const pdfDoc = await PDFDocument.create();
-            const processedUrls = new Set<string>(); // Track URLs within this group
+            const processedUrls = new Set<string>();
 
-            for (const sectionUrl of uniqueUrls) {
+            for (const sectionUrl of urls) {
                 if (processedUrls.has(sectionUrl)) {
-                    logWithTimestamp(`Skipping duplicate URL ${sectionUrl} in group ${groupName}`);
+                    logWithTimestamp(`Skipping duplicate URL ${sectionUrl} in section ${sectionSlug}`);
                     continue;
                 }
                 processedUrls.add(sectionUrl);
@@ -307,27 +289,27 @@ export async function generatePDF(
                 if (pdfBuffer.length > 0) {
                     const subPdfDoc = await PDFDocument.load(pdfBuffer);
                     const pageCount = subPdfDoc.getPageCount();
-                    logWithTimestamp(`Merging PDF for ${sectionUrl} with ${pageCount} page(s) into ${groupName}`);
+                    logWithTimestamp(`Merging PDF for ${sectionUrl} with ${pageCount} page(s) into ${sectionSlug}`);
                     const copiedPages = await pdfDoc.copyPages(subPdfDoc, subPdfDoc.getPageIndices());
                     for (const page of copiedPages) {
                         pdfDoc.addPage(page);
-                        logWithTimestamp(`Added page for ${sectionUrl} to ${groupName} PDF`);
+                        logWithTimestamp(`Added page for ${sectionUrl} to ${sectionSlug} PDF`);
                     }
                 }
             }
 
             const finalPageCount = pdfDoc.getPageCount();
             if (finalPageCount > 0) {
-                const outputPath = join(outputDir, `developer-apple-com-documentation-virtualization-${groupName}.pdf`);
+                const outputPath = join(outputDir, `${sectionSlug}.pdf`);
                 const pdfBytes = await pdfDoc.save();
                 writeFileSync(outputPath, new Uint8Array(pdfBytes));
                 logWithTimestamp(`PDF saved to ${outputPath} with ${finalPageCount} pages`);
             } else {
-                logWithTimestamp(`No pages generated for group ${groupName}`);
+                logWithTimestamp(`No pages generated for section ${sectionSlug}`);
             }
         }
 
-        logWithTimestamp(`Completed PDF generation for section groups`);
+        logWithTimestamp(`Completed PDF generation for section trees`);
         return Buffer.from([]); // Return empty buffer as PDFs are saved separately
     } else {
         const allLinks = await crawlLinks(ctx.page, url, urlPattern, visited, concurrentLimit, contentDiv, navDiv);

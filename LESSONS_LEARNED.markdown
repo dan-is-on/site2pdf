@@ -96,7 +96,7 @@ This document captures lessons learned during the development of `site2pdf-cli`,
     - **Issue**: `globalProcessedUrls` skipped root URLs, `vzvirtualmachine` group absorbed all URLs.
     - **Impact**: Missing root pages, fewer PDFs.
     - **Resolution**: Assigned root URLs to groups, reset `globalProcessedUrls` per group.
-    - **Action**: Updated `index.ts`, pending test.
+    - **Action**: Updated `index.ts`, partially fixed root pages.
 
 14. **Implement Dynamic Section Detection**
     - **Context**: Test with `/virtualization` (May 27, 2025, overnight) produced three PDFs, revealing hardcoded `vzvirtualmachine` logic.
@@ -107,32 +107,48 @@ This document captures lessons learned during the development of `site2pdf-cli`,
 
 15. **Dynamically Identify Sections with Grandchildren**
     - **Context**: Test (May 27, 2025, 7:35 PM) and feedback (May 28, 2025) highlighted missing dynamic section identification.
-    - **Issue**: `collectSectionUrls` used hardcoded patterns, missing children with grandchildren as sections (e.g., `/state-swift.enum`).
+    - **Issue**: `collectSectionUrls` used hardcoded patterns, missing children with grandchildren as sections.
     - **Impact**: Incorrect section splitting, fewer PDFs, subsections not separated.
-    - **Resolution**: Implement `splitSectionTrees` to:
-      - Build one URL tree during crawling.
-      - Split into an array of section trees, each rooted at a node with children.
-      - Treat children with grandchildren as separate section trees.
-      - Generate one PDF per section tree, excluding subsections.
-    - **Action**: Plan `splitSectionTrees` in `index.ts`, test with multiple roots.
+    - **Resolution**: Implemented `splitSectionTrees` to split URL tree into section trees, treating children with grandchildren as sections.
+    - **Action**: Updated `index.ts`, tested with multiple roots.
+
+16. **Avoid Hardcoded Semantic Groups**
+    - **Context**: Test (May 28, 2025) produced `vzvirtualmachine.pdf` with only its root page, as children were split into `methods`, `properties`, `devices`, `other`.
+    - **Issue**: `collectSectionUrls` used hardcoded semantic groups, not aligning with section definition (nodes with children).
+    - **Impact**: Incomplete `vzvirtualmachine.pdf`, fewer PDFs, non-dynamic solution.
+    - **Resolution**: Replaced `collectSectionUrls` with `splitSectionTrees`, removed semantic groups, included all immediate children in section PDFs unless they are sections.
+    - **Action**: Updated `index.ts`, tested with `/vzvirtualmachine`, `/virtualization`.
+
+17. **Eliminate Hardcoded URL Path References and Filename Prefixes**
+    - **Context**: Test (May 28, 2025) revealed hardcoded `/documentation/virtualization` selectors (lines 120, 144) and `developer-apple-com-documentation-` prefix (line 299, `index.ts`, artifact_version_id: `1f36b4ac-95c0-4092-877e-ed124a401d26`).
+    - **Issue**: Selectors limited link collection to virtualization URLs; prefix assumed Apple-specific filenames, breaking dynamic behavior for other roots (e.g., `/swift`).
+    - **Impact**: Restricted tool to Apple documentation, produced incorrect filenames, and risked file overwrites.
+    - **Resolution**:
+      - Replaced hardcoded selectors with `urlPattern`-based filtering.
+      - Removed `developer-apple-com-documentation-` prefix, used `generateSlug` for filenames.
+      - Added filename counter for unique slugs.
+      - Reviewed codebase for hardcoded strings.
+      - Tested with diverse URLs (e.g., `/swift`).
+    - **Action**: Updated `index.ts`, tested with multiple roots, documented in test instructions.
+    - **Reference**: User feedback (May 28, 2025), test output (May 28, 2025).
 
 ### Planned Features (Steps 8–11)
-16. **Enable Customizable Selectors**
+18. **Enable Customizable Selectors**
     - **Context**: Hardcoded selectors limit non-Apple site compatibility.
     - **Resolution**: Add `--content-div`, `--nav-div` arguments.
     - **Action**: Update `index.ts` for Step 8.
 
-17. **Filter Irrelevant URLs**
+19. **Filter Irrelevant URLs**
     - **Context**: External URLs bloat output, risk throttling.
     - **Resolution**: Add `--ignore` regex argument.
     - **Action**: Implement filtering for Step 9.
 
-18. **Preserve README Content**
+20. **Preserve README Content**
     - **Context**: Updates risk incorrect platform assumptions.
     - **Resolution**: Retain valid content, document macOS setup.
     - **Action**: Revise README for Step 10.
 
-19. **Adapt for App Store**
+21. **Adapt for App Store**
     - **Context**: CLI dependencies incompatible with app stores.
     - **Resolution**: Port to C# with .NET MAUI, use `HtmlAgilityPack`, `PDFSharp`.
     - **Action**: Prototype for Step 11.
