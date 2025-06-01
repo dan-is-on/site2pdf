@@ -159,11 +159,9 @@ export async function buildSectionTree(page: Page, url: string, urlPattern: RegE
     visited.add(normalizedUrl);
 
     let childUrls: string[] = [];
-    if (depth <= 1) { // Only scrape links for depth 0 and 1
-        childUrls = [...new Set(await getSectionLinks(page, normalizedUrl, normalizedPattern))];
-    } else {
-        logWithTimestamp(`Skipping link scraping for leaf node at depth ${depth}: ${normalizedUrl}`);
-    }
+    // Removed depth limit to scrape links at all depths
+    childUrls = [...new Set(await getSectionLinks(page, normalizedUrl, normalizedPattern))];
+    logWithTimestamp(`Depth ${depth}: Scraped ${childUrls.length} child URLs for ${normalizedUrl}`);
 
     const children: SectionNode[] = [];
     for (const childUrl of childUrls) {
@@ -173,7 +171,7 @@ export async function buildSectionTree(page: Page, url: string, urlPattern: RegE
         }
     }
 
-    logWithTimestamp(`Built tree node for ${normalizedUrl} with ${children.length} children at depth ${depth}`);
+    logWithTimestamp(`Depth ${depth}: Built tree node for ${normalizedUrl} with ${children.length} children`);
     return { url: normalizedUrl, children };
 }
 
@@ -185,7 +183,7 @@ async function main() {
         throw new Error("<base_url> is required");
     }
 
-    logWithTimestamp("list-sections.js version: 2025-05-27T19:28:00+10:00 (with flexible selectors, deduplication, and pattern fix)");
+    logWithTimestamp("list-sections.js version: 2025-06-01T13:57:00+10:00 (with recursive depth scraping)");
     let ctx;
     try {
         ctx = await useBrowserContext();

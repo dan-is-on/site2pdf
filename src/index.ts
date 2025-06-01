@@ -221,27 +221,29 @@ async function generateSinglePDF(
     }
 }
 
-function splitSectionTrees(node: SectionNode, sections: SectionNode[] = [], parentUrl: string | null = null): SectionNode[] {
-    const isSection = node.children.length > 0;
+function splitSectionTrees(node: SectionNode, sections: SectionNode[] = [], depth: number = 0): SectionNode[] {
     const normalizedUrl = normalizeURL(node.url);
-    let sectionNode: SectionNode = { url: normalizedUrl, children: [] };
+    const isSection = node.children.length > 0;
 
-    if (isSection) {
-        // Collect immediate children that are not sections themselves
-        for (const child of node.children) {
-            if (child.children.length === 0) {
-                sectionNode.children.push({ url: normalizeURL(child.url), children: [] });
-            }
-        }
+    // Create a section tree for the current node if it has children or is the root (depth 0)
+    let sectionNode: SectionNode = { url: normalizedUrl, children: [] };
+    if (isSection || depth === 0) {
+        // Collect immediate leaf children (children with no children of their own)
+        const leafChildren = node.children
+            .filter(child => child.children.length === 0)
+            .map(child => ({ url: normalizeURL(child.url), children: [] }));
+        sectionNode.children = leafChildren;
         sections.push(sectionNode);
-        logWithTimestamp(`Identified section: ${normalizedUrl} with ${sectionNode.children.length} immediate children`);
+        logWithTimestamp(`Depth ${depth}: Created section tree for ${normalizedUrl} with ${leafChildren.length} leaf children: ${JSON.stringify(leafChildren.map(c => c.url))}`);
+    } else {
+        logWithTimestamp(`Depth ${depth}: Node ${normalizedUrl} is a leaf, not creating a section tree`);
     }
 
-    // Recursively process children that are sections
-    for (const child of node.children) {
-        if (child.children.length > 0) {
-            splitSectionTrees(child, sections, normalizedUrl);
-        }
+    // Recursively process children that have children (subsections)
+    const subsectionChildren = node.children.filter(child => child.children.length > 0);
+    for (const child of subsectionChildren) {
+        logWithTimestamp(`Depth ${depth}: Processing subsection ${child.url} with ${child.children.length} children`);
+        splitSectionTrees(child, sections, depth + 1);
     }
 
     return sections;
